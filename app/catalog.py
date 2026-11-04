@@ -63,10 +63,11 @@ class Mode:
 MODES: dict[str, Mode] = {
     m.key: m
     for m in [
-        Mode("edit", "Restyle", "Uses the photo as reference: keeps the layout, changes style, materials and light."),
-        Mode("edges", "Line art", "Traces the photo into line art and redraws from it."),
+        Mode("edit", "Whole image", "The photo is the reference: layout stays, style, materials and light change."),
+        Mode("sketch", "Sketch", "The input is already a line drawing or sketch; it is rendered as drawn."),
+        Mode("edges", "Traced photo", "The photo is traced into line art first, then rendered from the lines."),
         Mode("text", "Text", "No reference image, prompt only."),
-        Mode("local", "Local", "Brush an area on the photo; only that area changes."),
+        Mode("local", "Brushed area", "Brush an area on the photo; only that area changes."),
     ]
 }
 
@@ -74,9 +75,136 @@ MODES: dict[str, Mode] = {
 SIZES = ["1024x1024", "1216x832", "832x1216", "1344x768", "768x1344", "1152x896", "896x1152"]
 
 
+# ---------------------------------------------------------------------------
+# Architecture tools: what the UI offers. Each tool runs on one generation mode
+# and comes with presets that fill in a FLUX.2 prompt written for that job.
+# ---------------------------------------------------------------------------
+
+KEEP_GEOMETRY = (
+    "Keep the architecture, walls, windows, ceiling, floor plan, furniture layout and camera angle "
+    "of image 0 exactly the same."
+)
+
+
+@dataclass(frozen=True)
+class Preset:
+    label: str
+    prompt: str
+
+
+@dataclass(frozen=True)
+class Tool:
+    key: str
+    label: str
+    mode: str
+    hint: str
+    example: str
+    presets: tuple[Preset, ...]
+    # Tools whose prompts contain "{target}" let the user pick what is being changed.
+    targets: tuple[str, ...] = ()
+
+
+def _render(scene: str) -> str:
+    return (
+        f"Turn the architectural line drawing in image 0 into a photorealistic render of {scene}. "
+        "Follow every line, wall, opening and object in image 0 exactly, with the same perspective. "
+        "Architectural photography, realistic materials, soft natural shadows."
+    )
+
+
+def _material(surface: str) -> str:
+    # Naming the target matters: with a vague "replace the surface" the model picked
+    # whatever surface it liked (it bricked the rug when asked to brick a wall).
+    return (
+        f"Change the {{target}} in image 0 to {surface}. Match the existing perspective, scale and lighting, "
+        "with realistic texture and subtle wear."
+    )
+
+
+def _light(atmosphere: str) -> str:
+    return f"{KEEP_GEOMETRY} Change only the lighting and atmosphere: {atmosphere}. Photorealistic architectural photography."
+
+
+def _style(style: str) -> str:
+    return (
+        f"Restyle the interior in image 0 as {style}. Keep the walls, windows, ceiling and camera angle exactly "
+        "the same; change the furniture, materials, textiles and decor. Photorealistic interior photography."
+    )
+
+
+TOOLS: dict[str, Tool] = {
+    t.key: t
+    for t in [
+        Tool(
+            "sketch", "Sketch to render", "sketch",
+            "Upload a line drawing or sketch. Turn on \"Trace a photo\" to start from a photo instead.",
+            "line.png",
+            (
+                Preset("Bright living room", _render(
+                    "a bright modern living room with white plaster walls, light oak floor, a low linen sofa, "
+                    "recessed ceiling downlights and floor-to-ceiling glazing with daylight")),
+                Preset("Concrete gallery", _render(
+                    "a minimalist gallery with board-formed concrete walls, polished concrete floor, "
+                    "recessed ceiling spotlights and a single sculptural bench")),
+                Preset("Hotel lobby", _render(
+                    "a warm boutique hotel lobby with travertine walls, walnut joinery, brass details "
+                    "and a round upholstered ottoman lit by warm downlights")),
+                Preset("Night interior", _render(
+                    "a calm living room at night with warm lamp light, dark timber floor and city lights "
+                    "visible through the glazing")),
+            ),
+        ),
+        Tool(
+            "materials", "Materials", "local",
+            "Brush a wall, floor or object, then pick a material.",
+            "sample_input.png",
+            (
+                Preset("Exposed brick", _material("exposed red brick laid in running bond with recessed grey mortar joints")),
+                Preset("Board-formed concrete", _material("board-formed architectural concrete with visible timber grain and tie holes")),
+                Preset("Light oak", _material("light oak with fine straight grain and a matte oiled finish")),
+                Preset("White marble", _material("polished white Carrara marble with soft grey veining")),
+                Preset("Terrazzo", _material("terrazzo with white base and small grey, green and terracotta chips")),
+                Preset("Lime plaster", _material("warm off-white lime plaster with a soft hand-troweled texture")),
+                Preset("Green velvet", _material("deep green velvet fabric with soft folds and sheen")),
+            ),
+            targets=("wall", "floor", "ceiling", "cabinets", "countertop", "bed", "sofa", "facade"),
+        ),
+        Tool(
+            "lighting", "Lighting & time", "edit",
+            "Changes the light of the whole scene and keeps everything else.",
+            "sample_input.png",
+            (
+                Preset("Golden hour", _light("low warm golden-hour sunlight streaming through the windows with long soft shadows")),
+                Preset("Blue hour", _light("blue hour dusk outside, all interior lamps and ceiling lights switched on with a warm glow")),
+                Preset("Night", _light("night outside, warm interior lighting from lamps and downlights, reflections in the glass")),
+                Preset("Overcast", _light("soft even overcast daylight with diffuse shadows and a neutral color balance")),
+                Preset("Snowy morning", _light("a bright snowy winter morning outside the windows, cool soft daylight inside")),
+            ),
+        ),
+        Tool(
+            "style", "Style & staging", "edit",
+            "Restyles or furnishes the room and keeps the architecture.",
+            "sample_input.png",
+            (
+                Preset("Japandi", _style("a Japandi space: light oak, linen in sand and beige, low furniture, paper lamps, a few plants")),
+                Preset("Scandinavian", _style("a Scandinavian space: white walls, pale birch, wool textiles, simple lamps, soft daylight")),
+                Preset("Industrial loft", _style("an industrial loft: dark steel, worn leather, reclaimed timber, black metal pendant lights")),
+                Preset("Mid-century", _style("a mid-century modern space: walnut furniture, mustard and teal accents, sculptural lamps")),
+                Preset("Virtual staging", (
+                    "Furnish the room in image 0 as a lived-in, styled space ready for a real-estate listing: "
+                    "add tasteful furniture, a rug, lamps, plants and artwork. " + KEEP_GEOMETRY.replace(
+                        "floor plan, furniture layout and camera angle", "floor plan and camera angle") + " Photorealistic interior photography."
+                )),
+            ),
+        ),
+    ]
+}
+
+
 def public_catalog() -> dict:
     return {
         "models": [asdict(m) for m in MODELS.values()],
         "modes": [asdict(m) for m in MODES.values()],
+        "tools": [asdict(t) for t in TOOLS.values()],
         "sizes": SIZES,
     }

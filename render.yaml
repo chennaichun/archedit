@@ -1,7 +1,7 @@
 # Render Blueprint: New > Blueprint > pick this repo. Builds the Dockerfile on every push to main.
 services:
   - type: web
-    name: controlnet-studio
+    name: archedit
     runtime: docker
     plan: free
     healthCheckPath: /healthz

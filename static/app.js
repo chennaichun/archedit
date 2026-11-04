@@ -1,6 +1,6 @@
 (() => {
 const $ = id => document.getElementById(id);
-const state = { mode: "edit", models: {}, source: null, style: null, busy: false, timer: 0, seq: 0 };
+const state = { mode: "sketch", tool: null, tools: {}, models: {}, source: null, sourceIsExample: false, style: null, busy: false, timer: 0, seq: 0 };
 
 async function api(path, opts = {}) {
   const res = await fetch(path, opts);
@@ -38,15 +38,15 @@ async function boot() {
       $("model").add(o);
     }
     if (state.models[st.default_model]) $("model").value = st.default_model;
-    for (const m of cat.modes) {
+    for (const t of cat.tools) {
+      state.tools[t.key] = t;
       const b = document.createElement("button");
-      b.type = "button"; b.dataset.k = m.key; b.textContent = m.label; b.title = m.description;
-      b.onclick = () => selectMode(m.key);
-      $("modes").appendChild(b);
+      b.type = "button"; b.dataset.k = t.key; b.textContent = t.label; b.setAttribute("role", "tab");
+      b.onclick = () => selectTool(t.key);
+      $("tools").appendChild(b);
     }
-    selectMode(state.mode);
     onModel();
-    loadExample();
+    selectTool(cat.tools[0].key);
   } catch (e) {
     $("statusPill").textContent = "Server not responding"; $("statusPill").className = "pill bad";
     setStatus(e.message, true);
@@ -54,9 +54,43 @@ async function boot() {
   loadHistory();
 }
 
+/* ---------- tools and presets ---------- */
+function selectTool(key) {
+  const tool = state.tools[key];
+  state.tool = tool;
+  for (const b of $("tools").children) b.setAttribute("aria-selected", b.dataset.k === key);
+  $("toolHint").textContent = tool.hint;
+  $("traceBox").hidden = key !== "sketch";
+  $("targetBox").hidden = !tool.targets.length;
+  $("target").replaceChildren(...tool.targets.map(t => new Option(t, t)));
+  const box = $("presets"); box.replaceChildren();
+  tool.presets.forEach((p, i) => {
+    const b = document.createElement("button");
+    b.type = "button"; b.textContent = p.label;
+    b.onclick = () => applyPreset(i);
+    box.appendChild(b);
+  });
+  applyPreset(0);
+  selectMode(currentMode());
+  // Swap in this tool's example unless the user uploaded their own image.
+  if (!state.source || state.sourceIsExample) loadExample(tool.example);
+}
+function currentMode() {
+  const tool = state.tool;
+  if (tool.key === "sketch" && $("trace").checked) return "edges";
+  return tool.mode;
+}
+function applyPreset(i) {
+  state.preset = i;
+  $("prompt").value = state.tool.presets[i].prompt.replaceAll("{target}", $("target").value || "surface");
+  [...$("presets").children].forEach((b, j) => b.setAttribute("aria-pressed", i === j));
+}
+$("target").onchange = () => { if (state.preset != null) applyPreset(state.preset); };
+$("trace").onchange = () => selectMode(currentMode());
+$("prompt").addEventListener("input", () => { state.preset = null; [...$("presets").children].forEach(b => b.setAttribute("aria-pressed", false)); });
+
 function selectMode(key) {
   state.mode = key;
-  for (const b of $("modes").children) b.setAttribute("aria-pressed", b.dataset.k === key);
   $("cannyBox").hidden = key !== "edges";
   $("brushBox").hidden = key !== "local";
   showSourceView();
@@ -128,9 +162,10 @@ function onModel() { $("stepsBox").hidden = !state.models[$("model").value]?.adj
 $("model").onchange = onModel;
 
 /* ---------- source image ---------- */
-function setSource(file) {
+function setSource(file, isExample = false) {
   if (!file || !file.type.startsWith("image/")) { setStatus("Choose an image file", true); return; }
   state.source = file;
+  state.sourceIsExample = isExample;
   const url = URL.createObjectURL(file);
   show("srcImg", "srcEmpty", url);
   $("srcInfo").textContent = file.name || "";
@@ -143,12 +178,12 @@ function setSource(file) {
   };
   img.src = url;
 }
-// Start with the bedroom photo from the original StableDiffusionWithGradio repo.
-async function loadExample() {
-  if (state.source) return;
+// Examples from the original StableDiffusionWithGradio repo: an interior line drawing and a bedroom photo.
+async function loadExample(name) {
+  if (state.source && state.source.name === name) return;
   try {
-    const blob = await (await api("/examples/sample_input.png")).blob();
-    if (!state.source) setSource(new File([blob], "sample_input.png", { type: "image/png" }));
+    const blob = await (await api(`/examples/${name}`)).blob();
+    if (!state.source || state.sourceIsExample) setSource(new File([blob], name, { type: "image/png" }), true);
   } catch {}
 }
 $("upload").onclick = () => $("file").click();
@@ -218,7 +253,7 @@ $("askClaude").onclick = async () => {
     if (state.source) fd.append("image", state.source);
     const s = await (await api("/api/prompt", { method: "POST", body: fd })).json();
     $("prompt").value = s.prompt;
-    if (s.mode !== state.mode && !(s.mode !== "text" && !state.source)) selectMode(s.mode);
+    [...$("presets").children].forEach(b => b.setAttribute("aria-pressed", false));
     setStatus(s.notes);
   } catch (e) {
     setStatus(e.message, true);
@@ -277,6 +312,7 @@ $("useResult").onclick = async () => {
   try {
     const blob = await (await api($("outImg").src)).blob();
     setSource(new File([blob], "result.png", { type: "image/png" }));
+    if (state.tool.key === "sketch") selectTool("materials");  // a render is a photo now: keep editing it
   } catch (e) { setStatus(e.message, true); }
 };
 

@@ -29,7 +29,6 @@ header p{margin:4px 0 0;color:var(--muted);max-width:64ch}
 .ai{display:grid;gap:8px;padding-bottom:16px;border-bottom:1px solid var(--line)}
 .field{display:grid;gap:6px;min-width:0}
 label,.lbl{font-size:12px;font-weight:700;letter-spacing:.06em;color:var(--muted)}
-.check{display:flex;gap:8px;align-items:center;font-weight:500;letter-spacing:0;font-size:13px}
 textarea,input[type=text],input[type=number],select{width:100%;font:inherit;font-size:14px;color:var(--ink);background:var(--bg);border:1px solid var(--line);border-radius:4px;padding:8px 10px}
 textarea{resize:vertical}
 :focus-visible{outline:2px solid var(--accent);outline-offset:2px}
@@ -65,3 +64,12 @@ figcaption span:last-child{font-family:var(--f-mono);font-weight:400;letter-spac
 .history button{padding:0;border:1px solid var(--line);border-radius:4px;overflow:hidden;background:var(--plate);cursor:pointer;aspect-ratio:1/1}
 .history img{width:100%;height:100%;object-fit:cover;display:block}
 @media (prefers-reduced-motion:reduce){*{transition:none!important}}
+
+.sub{margin:2px 0 0;color:var(--muted);font-size:14px}
+.tools{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px}
+.tools button{font:inherit;font-size:13px;font-weight:600;text-align:left;padding:8px 10px;border:1px solid var(--line);border-radius:4px;background:var(--bg);color:var(--ink);cursor:pointer}
+.tools button[aria-selected="true"]{background:var(--accent);border-color:var(--accent);color:var(--accent-ink)}
+.chips{display:flex;flex-wrap:wrap;gap:6px}
+.chips button{font:inherit;font-size:12.5px;padding:4px 10px;border:1px solid var(--line);border-radius:999px;background:var(--panel);color:var(--ink);cursor:pointer}
+.chips button[aria-pressed="true"]{border-color:var(--accent);color:var(--accent);font-weight:600}
+.check{display:flex;gap:8px;align-items:center;font-weight:500;letter-spacing:0;font-size:13px;color:var(--ink)}

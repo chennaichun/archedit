@@ -102,9 +102,14 @@ def plan_local_edit(source: Image.Image, mask: Image.Image, pad: float = 0.6, mi
     if bbox is None:
         raise PreprocessError("Brush the area you want to change first.")
     x0, y0, x1, y1 = bbox
-    # Square-ish crop with context around the region, so the model sees what surrounds it.
-    side = max(max(x1 - x0, y1 - y0) * (1 + 2 * pad), min_side)
-    cw, ch = min(round(side), W), min(round(side), H)
+    # Crop that follows the region's own shape plus some context on every side.
+    # (A square crop sized by the longest side made tall, thin regions such as a wall
+    # use the whole room; the model then edited whatever sat in the middle instead.)
+    cw = max((x1 - x0) * (1 + 2 * pad), min_side)
+    ch = max((y1 - y0) * (1 + 2 * pad), min_side)
+    # Keep the aspect ratio within 3:1 so the model gets a usable frame.
+    cw, ch = max(cw, ch / 3), max(ch, cw / 3)
+    cw, ch = min(round(cw), W), min(round(ch), H)
     cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
     left = int(min(max(cx - cw / 2, 0), W - cw))
     top = int(min(max(cy - ch / 2, 0), H - ch))

@@ -1,6 +1,17 @@
-# ControlNet Studio
+# ArchEdit
 
-Upload a photo, then restyle it, redraw it from line art, or change one brushed area with FLUX.2. Images are generated on Cloudflare Workers AI's free daily allowance, so no GPU is needed. Claude can write the prompt for you (optional).
+Image editing for architecture and interiors. Turn a sketch into a render, swap materials on a brushed surface, relight a room, or restyle and stage it, while the building's geometry and camera stay put. Images are generated with FLUX.2 on Cloudflare Workers AI's free daily allowance, so no GPU is needed. Claude can write the prompt for you (optional).
+
+## Tools
+
+| Tool | What it does | How |
+|---|---|---|
+| **Sketch to render** | Line drawing or sketch → photorealistic render | The drawing is sent as-is (or a photo is traced into line art first) |
+| **Materials** | Brush a surface, pick what it is (wall, floor, ceiling…) and a material (brick, concrete, oak, marble…) | Crop around the brush, edit the crop, paste back through a feathered mask: pixels outside the brush never change |
+| **Lighting & time** | Golden hour, blue hour, night, overcast, snow | Whole-image edit that keeps geometry and camera |
+| **Style & staging** | Japandi, Scandinavian, industrial, mid-century, virtual staging | Whole-image edit that keeps walls, windows and camera |
+
+Each tool has presets with prompts written for that job. One lesson from testing: a vague "replace the surface" made the model pick its own target (it bricked the rug instead of the wall), so material presets always name the surface.
 
 ## Cost
 
@@ -61,13 +72,14 @@ Each browser gets an anonymous `HttpOnly` cookie, so visitors only see their own
 
 ## Modes
 
-- **Restyle**: the photo is the reference; layout stays, style, materials and light change.
-- **Line art**: traces the photo into line art, then redraws from it.
+- **Whole image** (`edit`): the photo is the reference; layout stays, style, materials and light change.
+- **Sketch**: the input is already a drawing and is rendered as drawn.
+- **Traced photo** (`edges`): traces the photo into line art, then redraws from it.
 - **Text**: no reference image.
-- **Local**: brush an area and only that area changes. The server crops around it, sends the crop to FLUX.2 (klein 4B by default), and pastes the result back through a feathered mask, so pixels outside the brushed area stay identical. **Edit result** lets you continue with the next change.
+- **Local**: brush an area and only that area changes (used by Materials). The crop follows the brushed area's shape plus context. **Edit result** lets you continue with the next change.
 - **Style image**: optionally add a second image as a style reference.
 
-The app opens with the bedroom photo from the original [StableDiffusionWithGradio](https://github.com/chennaichun/StableDiffusionWithGradio) repo (`examples/`).
+Examples come from the original [StableDiffusionWithGradio](https://github.com/chennaichun/StableDiffusionWithGradio) repo (`examples/`): an interior line drawing for Sketch to render and a bedroom photo for the other tools.
 
 ## Tests
 

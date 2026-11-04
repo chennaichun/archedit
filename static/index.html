@@ -3,32 +3,44 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>ControlNet Studio</title>
+<title>ArchEdit</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Source+Sans+3:wght@400;600;700&family=Source+Serif+4:opsz,wght@8..60,600;8..60,900&family=JetBrains+Mono:wght@400;600&display=swap">
-<link rel="stylesheet" href="/static/style.css?v=5">
+<link rel="stylesheet" href="/static/style.css?v=6">
 </head>
 <body>
 <div class="wrap">
   <header>
-    <h1>ControlNet Studio</h1>
+    <div><h1>ArchEdit</h1><p class="sub">Image editing for architecture and interiors</p></div>
     <div class="pills"><span class="pill" id="remaining" hidden></span><span class="pill" id="statusPill">…</span></div>
   </header>
 
   <div class="main">
     <aside class="panel" aria-label="Settings">
       <div class="field">
+        <span class="lbl" id="toolsLbl">Tool</span>
+        <div class="tools" id="tools" role="tablist" aria-labelledby="toolsLbl"></div>
+        <p class="note" id="toolHint"></p>
+      </div>
+      <div class="field" id="traceBox" hidden>
+        <label class="check"><input type="checkbox" id="trace"> Trace a photo (start from a photo instead of a sketch)</label>
+      </div>
+      <div class="field" id="targetBox" hidden>
+        <label for="target">Change the</label>
+        <select id="target"></select>
+      </div>
+      <div class="field">
+        <span class="lbl" id="presetsLbl">Presets</span>
+        <div class="chips" id="presets" role="group" aria-labelledby="presetsLbl"></div>
+      </div>
+      <div class="field">
         <label for="idea">Idea</label>
-        <textarea id="idea" rows="2">Change the bedspread to dark green velvet</textarea>
+        <textarea id="idea" rows="2">Render this sketch as a warm Scandinavian living room</textarea>
         <button class="btn ghost" id="askClaude" title="Claude writes a prompt from your idea and the input image">Write prompt with Claude</button>
       </div>
       <div class="field">
         <label for="prompt">Prompt</label>
-        <textarea id="prompt" rows="5">Restyle the bedroom in image 0 as a warm Japandi space: light oak floor, linen bedding in sand and beige tones, soft afternoon sunlight through the large window, a few indoor plants, calm neutral palette, clean uncluttered surfaces, realistic interior photography.</textarea>
-      </div>
-      <div class="field">
-        <span class="lbl" id="modesLbl">Mode</span>
-        <div class="types" id="modes" role="group" aria-labelledby="modesLbl"></div>
+        <textarea id="prompt" rows="6"></textarea>
       </div>
       <div class="field" id="brushBox" hidden>
         <div class="row"><label for="brush">Brush</label><output id="brushOut">40</output></div>
@@ -69,7 +81,7 @@
             </div>
           </figure>
           <figure>
-            <figcaption><span>Control</span><span id="mapInfo"></span></figcaption>
+            <figcaption><span>Sent to model</span><span id="mapInfo"></span></figcaption>
             <div class="plate"><img id="mapImg" alt="" hidden><span class="empty" id="mapEmpty">—</span></div>
           </figure>
           <figure>
@@ -97,6 +109,6 @@
     </div>
   </div>
 </div>
-<script src="/static/app.js?v=5"></script>
+<script src="/static/app.js?v=7"></script>
 </body>
 </html>

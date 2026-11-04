@@ -42,10 +42,9 @@ Image.MAX_IMAGE_PIXELS = 40_000_000  # reject decompression bombs (~6300 x 6300)
 VISITOR_COOKIE = "cs_visitor"
 CLEANUP_EVERY = 600  # seconds between output-folder sweeps
 STYLE_HINT = " Match the style, colors and mood of image 1."
-LOCAL_HINT = (
-    " Apply this change to the main subject at the center of image 0. Keep the same framing,"
-    " camera angle, perspective, lighting and everything around it unchanged."
-)
+# The server pastes back only the brushed area, so the prompt just has to name the
+# change; it should not guess where the area is ("at the center" misled the model).
+LOCAL_HINT = " Keep everything else in image 0 the same, with the same framing, camera angle, perspective and lighting."
 
 
 def parse_size(size: str) -> tuple[int, int]:
@@ -123,7 +122,7 @@ def create_app(
         yield
         await image_client.aclose()
 
-    app = FastAPI(title="ControlNet Studio", lifespan=lifespan)
+    app = FastAPI(title="ArchEdit", lifespan=lifespan)
     app.state.limiter = limiter
     app.state.cache = cache
 

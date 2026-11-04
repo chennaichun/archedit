@@ -21,6 +21,7 @@ from app.catalog import MODELS
 from app.config import Settings
 from app.llm import ClaudePromptWriter, LLMError, PromptSuggestion
 from app.main import create_app
+from app.preprocess import fit_ratio
 
 
 def sample_png(w=640, h=480, color="white") -> bytes:
@@ -108,7 +109,12 @@ def test_index_status_catalog(ctx):
     assert ctx.client.get("/api/status").json()["cloudflare_ready"] is True
     cat = ctx.client.get("/api/catalog").json()
     assert {m["key"] for m in cat["models"]} == {"klein-4b", "klein-9b", "dev"}
-    assert [m["key"] for m in cat["modes"]] == ["edit", "edges", "text", "local"]
+    assert [m["key"] for m in cat["modes"]] == ["edit", "sketch", "edges", "text", "local"]
+    assert [t["key"] for t in cat["tools"]] == ["sketch", "materials", "lighting", "style"]
+    modes = {m["key"] for m in cat["modes"]}
+    for tool in cat["tools"]:
+        assert tool["mode"] in modes and tool["presets"]
+        assert (EXAMPLES / tool["example"]).exists()
 
 
 def test_preview_edges_is_line_art(ctx):
@@ -451,3 +457,35 @@ def test_daily_limiter_resets_at_utc_midnight():
     assert lim.check("a")
     now[0] += 24 * 3600
     assert lim.check("a") is None
+
+
+def test_sketch_mode_sends_the_drawing_as_is(ctx):
+    """Sketch mode must not re-trace an existing line drawing (that would double every line)."""
+    line = real_png("line.png")
+    r = ctx.client.post(
+        "/api/generate",
+        files={"image": ("line.png", line, "image/png")},
+        data={"prompt": "render it", "mode": "sketch", "size": "1216x832"},
+    )
+    assert r.status_code == 200, r.text
+    guide = np.array(Image.open(io.BytesIO(ctx.client.get(r.json()["guide_url"]).content)).convert("L")).astype(int)
+    expected = np.array(fit_ratio(Image.open(io.BytesIO(line)), 1216, 832).convert("L")).astype(int)
+    assert np.abs(guide - expected).mean() < 1  # the drawing itself, not Canny edges of it
+    assert "input_image_0" in parse_multipart(ctx.cf.requests[-1])
+
+
+def test_presets_keep_the_geometry():
+    from app.catalog import TOOLS
+
+    for key in ("lighting", "style"):
+        for preset in TOOLS[key].presets:
+            assert "image 0" in preset.prompt and "camera angle" in preset.prompt
+
+
+def test_material_presets_name_the_target():
+    from app.catalog import TOOLS
+
+    tool = TOOLS["materials"]
+    assert "wall" in tool.targets
+    for preset in tool.presets:
+        assert "{target}" in preset.prompt

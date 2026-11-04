@@ -1,5 +1,5 @@
 #!/bin/bash
-# Double-click to start ControlNet Studio.
+# Double-click to start ArchEdit.
 cd "$(dirname "$0")"
 if [ ! -d .venv ]; then
   echo "First run: installing packages..."
@@ -7,5 +7,5 @@ if [ ! -d .venv ]; then
 fi
 [ -f .env ] || cp .env.example .env
 (sleep 2 && open http://localhost:8765) &
-echo "ControlNet Studio is running at http://localhost:8765 (close this window to stop it)"
+echo "ArchEdit is running at http://localhost:8765 (close this window to stop it)"
 .venv/bin/uvicorn app.main:app --port 8765

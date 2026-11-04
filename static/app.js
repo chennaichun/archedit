@@ -302,6 +302,7 @@ $("generate").onclick = async () => {
   if (state.source && state.mode !== "text") fd.append("image", state.source);
   if (state.style && state.mode !== "text") fd.append("style_image", state.style);
   if (state.mode === "local") fd.append("mask", await maskBlob(), "mask.png");
+  if ($("varToggle").checked) fd.append("variations", "3");
 
   const t0 = Date.now();
   $("progress").hidden = false; $("bar").style.width = "8%";
@@ -317,6 +318,7 @@ $("generate").onclick = async () => {
     $("openOut").href = r.image_url; $("openOut").hidden = false;
     $("outInfo").textContent = `seed ${r.seed} · ${r.cached ? "cached" : r.elapsed + "s"}`;
     await addRound(r, fd.get("prompt"));
+    showVariants(r.variants || [], r.failed || 0);
     showRemaining(r.remaining_today);
     if (r.guide_url) { show("mapImg", "mapEmpty", r.guide_url); $("mapInfo").textContent = state.mode === "local" ? "Crop sent" : r.size; }
     loadHistory();
@@ -329,6 +331,36 @@ $("generate").onclick = async () => {
     state.busy = false; $("generate").disabled = false;
   }
 };
+
+/* ---------- variations ---------- */
+// Several seeds of the same edit. The first one becomes the round right away;
+// picking another swaps it in place of that round.
+function showVariants(variants, failed) {
+  const box = $("variants"); box.replaceChildren();
+  $("variantsPanel").hidden = variants.length < 2;
+  if (failed) setStatus(`${failed} variation${failed > 1 ? "s" : ""} failed; showing the rest.`, true);
+  variants.forEach((v, i) => {
+    const b = document.createElement("button");
+    b.type = "button"; b.setAttribute("aria-pressed", i === 0);
+    const img = document.createElement("img"); img.src = v.image_url; img.alt = `Variation ${i + 1}`;
+    const cap = document.createElement("span"); cap.textContent = `seed ${v.seed}`;
+    b.append(img, cap);
+    b.onclick = () => pickVariant(v, b);
+    box.appendChild(b);
+  });
+}
+async function pickVariant(v, button) {
+  [...$("variants").children].forEach(b => b.setAttribute("aria-pressed", b === button));
+  const blob = await (await api(v.image_url)).blob();
+  const cur = state.rounds[state.round];
+  Object.assign(cur, { file: new File([blob], `round-${state.round}.png`, { type: "image/png" }), url: v.image_url });
+  state.rounds = state.rounds.slice(0, state.round + 1);  // later rounds were built on the old pick
+  setSource(cur.file, false, true);
+  show("outImg", "outEmpty", v.image_url);
+  $("openOut").href = v.image_url;
+  $("outInfo").textContent = `seed ${v.seed}`;
+  renderRounds();
+}
 
 /* ---------- multi-round editing ---------- */
 // Every result becomes the input of the next round. Going back to an earlier
@@ -347,6 +379,7 @@ async function addRound(r, prompt) {
 }
 function goToRound(i) {
   if (i < 0 || i >= state.rounds.length || i === state.round) return;
+  $("variantsPanel").hidden = true;
   state.round = i;
   const r = state.rounds[i];
   setSource(r.file, false, true);
@@ -380,7 +413,48 @@ function renderRounds() {
   $("redoRound").disabled = state.round >= state.rounds.length - 1;
   $("resetRounds").disabled = state.round === 0;
   list.querySelector('[aria-current="step"]')?.scrollIntoView({ block: "nearest", inline: "nearest" });
+  renderCompare();
 }
+/* ---------- before / after ---------- */
+state.cmpPrev = false;
+function renderCompare() {
+  const show = state.round >= 1;
+  $("comparePanel").hidden = !show;
+  if (!show) return;
+  const beforeIdx = state.cmpPrev ? state.round - 1 : 0;
+  const before = state.rounds[beforeIdx], after = state.rounds[state.round];
+  $("cmpBefore").src = before.url;
+  $("cmpAfter").src = after.url;
+  $("cmpBeforeTag").textContent = beforeIdx === 0 ? "Original" : `Round ${beforeIdx}`;
+  $("cmpAfterTag").textContent = `Round ${state.round}`;
+  $("cmpOrig").setAttribute("aria-pressed", !state.cmpPrev);
+  $("cmpPrev").setAttribute("aria-pressed", state.cmpPrev);
+  const img = new Image();
+  img.onload = () => { $("compare").style.aspectRatio = `${img.naturalWidth} / ${img.naturalHeight}`; };
+  img.src = after.url;
+}
+$("cmpOrig").onclick = () => { state.cmpPrev = false; renderCompare(); };
+$("cmpPrev").onclick = () => { state.cmpPrev = true; renderCompare(); };
+{
+  const cmp = $("compare");
+  const set = pct => {
+    pct = Math.max(0, Math.min(100, pct));
+    $("cmpAfter").style.clipPath = `inset(0 0 0 ${pct}%)`;
+    $("handle").style.left = pct + "%";
+    cmp.setAttribute("aria-valuenow", Math.round(pct));
+  };
+  const fromEvent = e => { const r = cmp.getBoundingClientRect(); set((e.clientX - r.left) / r.width * 100); };
+  let drag = false;
+  cmp.addEventListener("pointerdown", e => { drag = true; cmp.setPointerCapture(e.pointerId); fromEvent(e); });
+  cmp.addEventListener("pointermove", e => { if (drag) fromEvent(e); });
+  cmp.addEventListener("pointerup", () => { drag = false; });
+  cmp.addEventListener("keydown", e => {
+    const now = +cmp.getAttribute("aria-valuenow");
+    if (e.key === "ArrowLeft") { set(now - 5); e.preventDefault(); }
+    if (e.key === "ArrowRight") { set(now + 5); e.preventDefault(); }
+  });
+}
+
 $("undoRound").onclick = () => goToRound(state.round - 1);
 $("redoRound").onclick = () => goToRound(state.round + 1);
 $("resetRounds").onclick = () => goToRound(0);

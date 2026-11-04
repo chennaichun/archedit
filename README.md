@@ -20,6 +20,8 @@ Each tool has presets with prompts written for that job. Two lessons from testin
 
 Every result becomes the input of the next round, so edits stack: brick wall → blue hour → declutter. The **Rounds** timeline shows each step; **Undo**, **Redo** and **Original** move through it, and editing from an earlier round branches (later rounds are replaced). Uploading a new image starts a new session.
 
+**3 variations** runs the same edit with three consecutive seeds in parallel (about the time of one) and shows them side by side; the first becomes the round, and picking another swaps it in. The daily allowance is reserved for the whole batch up front, so a batch never stops halfway, and if one variation fails the others are still shown. **Before / after** compares the current round with the original or the previous round on a draggable slider.
+
 Two details make rounds hold up:
 - **Size defaults to "Match input"** (≈1 MP in the input's aspect ratio). A fixed size cropped the photo a bit more every round; in testing, a square output cut off the brick wall added the round before.
 - **Brushed-area rounds are pixel-exact outside the brush**, so they don't degrade the rest of the image. Whole-image rounds (lighting, style) redraw the scene from a reference image capped at 504 px by Cloudflare, so fine detail can drift; doing whole-image changes first and brushed changes after keeps the result sharpest.

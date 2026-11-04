@@ -6,7 +6,7 @@
 <title>ArchEdit</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Source+Sans+3:wght@400;600;700&family=Source+Serif+4:opsz,wght@8..60,600;8..60,900&family=JetBrains+Mono:wght@400;600&display=swap">
-<link rel="stylesheet" href="/static/style.css?v=10">
+<link rel="stylesheet" href="/static/style.css?v=13">
 </head>
 <body>
 <div class="wrap">
@@ -103,11 +103,33 @@
         <input type="file" id="styleFile" accept="image/*" hidden>
         <div class="btns">
           <button class="btn primary" id="generate">Generate</button>
+          <label class="check" title="Generate 3 versions with different seeds and pick the best"><input type="checkbox" id="varToggle"> 3 variations</label>
           <button class="btn ghost" id="upload">Upload image</button>
           <button class="btn ghost" id="styleBtn" title="Pick an image to use as a style reference">Style image</button>
           <a class="btn ghost" id="openOut" href="#" target="_blank" rel="noopener" hidden>Full size</a>
         </div>
         <p class="note" id="status" role="status"></p>
+      </section>
+
+      <section class="panel" id="comparePanel" hidden>
+        <div class="rounds-head">
+          <h2>Before / after</h2>
+          <div class="seg2" role="group" aria-label="Compare with">
+            <button type="button" id="cmpOrig" aria-pressed="true">vs Original</button>
+            <button type="button" id="cmpPrev" aria-pressed="false">vs Previous</button>
+          </div>
+        </div>
+        <div class="compare" id="compare" tabindex="0" role="slider" aria-label="Before and after" aria-valuemin="0" aria-valuemax="100" aria-valuenow="50">
+          <img id="cmpBefore" alt="Before">
+          <img class="after" id="cmpAfter" alt="After">
+          <span class="tag l" id="cmpBeforeTag">Original</span><span class="tag r" id="cmpAfterTag">After</span>
+          <div class="handle" id="handle"></div>
+        </div>
+      </section>
+
+      <section class="panel" id="variantsPanel" hidden>
+        <div class="rounds-head"><h2>Variations</h2><span class="note">Pick the best one; it becomes this round.</span></div>
+        <div class="variants" id="variants"></div>
       </section>
 
       <section class="panel" id="roundsPanel" hidden>
@@ -129,6 +151,6 @@
     </div>
   </div>
 </div>
-<script src="/static/app.js?v=11"></script>
+<script src="/static/app.js?v=13"></script>
 </body>
 </html>

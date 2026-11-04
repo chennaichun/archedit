@@ -38,14 +38,19 @@ class DailyLimiter:
         if today != self._day:
             self._day, self._counts, self._total = today, {}, 0
 
-    def check(self, visitor: str) -> Optional[str]:
-        """Return an error message if this visitor may not generate now, else None."""
+    def check(self, visitor: str, needed: int = 1) -> Optional[str]:
+        """Return an error message if this visitor may not run `needed` generations now, else None."""
         with self._lock:
             self._roll()
-            if self.total and self._total >= self.total:
-                return "The demo has used today's free image allowance. It resets at 00:00 UTC."
-            if self.per_visitor and self._counts.get(visitor, 0) >= self.per_visitor:
-                return f"You've used your {self.per_visitor} edits for today. More are available after 00:00 UTC."
+            if self.total and self._total + needed > self.total:
+                if self._total >= self.total:
+                    return "The demo has used today's free image allowance. It resets at 00:00 UTC."
+                return f"Only {self.total - self._total} edits are left on the demo today. Try fewer variations."
+            used = self._counts.get(visitor, 0)
+            if self.per_visitor and used + needed > self.per_visitor:
+                if used >= self.per_visitor:
+                    return f"You've used your {self.per_visitor} edits for today. More are available after 00:00 UTC."
+                return f"You have {self.per_visitor - used} edits left today. Try fewer variations."
         return None
 
     def record(self, visitor: str) -> None:

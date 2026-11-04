@@ -538,3 +538,34 @@ def test_text_mode_auto_size_is_square(ctx):
     text_edit(ctx.client, size="auto")
     parts = parse_multipart(ctx.cf.requests[-1])
     assert parts["width"] == b"1024" and parts["height"] == b"1024"
+
+
+def test_variations_use_consecutive_seeds_in_parallel(ctx):
+    r = text_edit(ctx.client, seed="100", variations="3")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert [v["seed"] for v in body["variants"]] == [100, 101, 102]
+    assert len({v["image_url"] for v in body["variants"]}) == 3
+    assert sorted(int(parse_multipart(q)["seed"]) for q in ctx.cf.requests) == [100, 101, 102]
+    assert body["image_url"] == body["variants"][0]["image_url"]
+
+
+def test_variations_reserve_the_allowance_up_front(tmp_path):
+    c = make_ctx(tmp_path, FakeCloudflare(), daily_limit_per_visitor=2)
+    with c.client:
+        r = text_edit(c.client, variations="3")
+        assert r.status_code == 429 and "2 edits left" in r.json()["detail"]
+        assert not c.cf.requests  # nothing was spent on a batch that could not finish
+        assert len(text_edit(c.client, variations="2").json()["variants"]) == 2
+
+
+def test_variations_bounds(ctx):
+    assert text_edit(ctx.client, variations="0").status_code == 400
+    assert text_edit(ctx.client, variations="5").status_code == 400
+
+
+def test_one_failed_variation_still_returns_the_rest(tmp_path):
+    c = make_ctx(tmp_path, FlakyCloudflare(failures=1, fail_status=400))  # one request fails, no retry on 4xx
+    with c.client:
+        body = text_edit(c.client, variations="3").json()
+    assert body["failed"] == 1 and len(body["variants"]) == 2

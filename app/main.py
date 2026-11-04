@@ -41,6 +41,7 @@ MAX_UPLOAD = 20 * 1024 * 1024
 Image.MAX_IMAGE_PIXELS = 40_000_000  # reject decompression bombs (~6300 x 6300)
 VISITOR_COOKIE = "cs_visitor"
 CLEANUP_EVERY = 600  # seconds between output-folder sweeps
+MAX_VARIATIONS = 4
 STYLE_HINT = " Match the style, colors and mood of image 1."
 # The server pastes back only the brushed area, so the prompt just has to name the
 # change; it should not guess where the area is ("at the center" misled the model).
@@ -237,8 +238,11 @@ def create_app(
         image: Optional[UploadFile] = File(None),
         style_image: Optional[UploadFile] = File(None),
         mask: Optional[UploadFile] = File(None),
+        variations: int = Form(1),
     ):
         visitor = visitor_id(request)
+        if not 1 <= variations <= MAX_VARIATIONS:
+            raise HTTPException(400, f"Variations must be between 1 and {MAX_VARIATIONS}.")
         if mode not in MODES:
             raise HTTPException(400, f"Unknown mode: {mode}")
         prompt = prompt.strip()
@@ -296,70 +300,81 @@ def create_app(
             prompt_sent += LOCAL_HINT
 
         fixed_seed = seed >= 0
-        if not fixed_seed:
-            seed = random.randint(0, 2**31 - 1)
+        base_seed = seed if fixed_seed else random.randint(0, 2**31 - 1 - MAX_VARIATIONS)
         effective_steps = steps if image_model.adjustable_steps else None
-        cache_key = ResultCache.key(
-            image_model.model_id, prompt_sent, width, height, seed, guidance, effective_steps,
-            images=tuple(references),
-        )
+        out_size = size
 
-        started = time.time()
-        result = cache.get(cache_key) if fixed_seed else None
-        cached = result is not None
-        if not cached:
-            refusal = limiter.check(visitor)
-            if refusal:
-                raise HTTPException(429, refusal)
-            result = await image_client.generate(
-                ImageRequest(
-                    prompt=prompt_sent,
-                    model=image_model,
-                    width=width,
-                    height=height,
-                    references=references,
-                    seed=seed,
-                    guidance=guidance,
-                    steps=effective_steps,
-                )
+        def cache_key_for(s: int) -> str:
+            return ResultCache.key(
+                image_model.model_id, prompt_sent, width, height, s, guidance, effective_steps,
+                images=tuple(references),
             )
-            limiter.record(visitor)
-            cache.put(cache_key, result)
-        elapsed = round(time.time() - started, 1)
 
-        try:
-            output = Image.open(io.BytesIO(result))
-            output.load()
-        except (UnidentifiedImageError, OSError):
-            raise HTTPException(502, "Cloudflare returned something that is not an image.")
-        if plan is not None:
-            output = await asyncio.to_thread(composite_local, plan, output)
-            size = f"{output.width}x{output.height}"
+        # Variations are the same request with consecutive seeds. Reserve the daily
+        # allowance for all of them up front, so a batch never stops halfway.
+        seeds = [base_seed + i for i in range(variations)]
+        cached_results = {s: cache.get(cache_key_for(s)) if fixed_seed else None for s in seeds}
+        to_generate = [s for s in seeds if cached_results[s] is None]
+        refusal = limiter.check(visitor, len(to_generate)) if to_generate else None
+        if refusal:
+            raise HTTPException(429, refusal)
 
-        job_id = uuid.uuid4().hex
-        output.convert("RGB").save(out_dir / f"{job_id}.png")
-        if guide_png:
-            (out_dir / f"{job_id}-guide.png").write_bytes(guide_png)
-        meta = {
-            "id": job_id,
-            "prompt": prompt,
-            "mode": mode,
-            "model": image_model.key,
-            "size": size,
-            "seed": seed,
-            "guidance": guidance,
-            "steps": effective_steps,
-            "style_reference": style is not None,
-            "elapsed": elapsed,
-            "cached": cached,
-            "created": started,
-            "image_url": f"/outputs/{job_id}.png",
-            "guide_url": f"/outputs/{job_id}-guide.png" if guide_png else None,
-        }
-        record = {**meta, "owner": owner_tag(visitor)}
-        (out_dir / f"{job_id}.json").write_text(json.dumps(record, ensure_ascii=False, indent=2))
+        async def run_one(s: int) -> dict:
+            started = time.time()
+            result = cached_results[s]
+            cached = result is not None
+            if not cached:
+                result = await image_client.generate(
+                    ImageRequest(
+                        prompt=prompt_sent, model=image_model, width=width, height=height,
+                        references=references, seed=s, guidance=guidance, steps=effective_steps,
+                    )
+                )
+                limiter.record(visitor)
+                cache.put(cache_key_for(s), result)
+            elapsed = round(time.time() - started, 1)
+            try:
+                output = Image.open(io.BytesIO(result))
+                output.load()
+            except (UnidentifiedImageError, OSError):
+                raise HTTPException(502, "Cloudflare returned something that is not an image.")
+            final_size = out_size
+            if plan is not None:
+                output = await asyncio.to_thread(composite_local, plan, output)
+                final_size = f"{output.width}x{output.height}"
+
+            job_id = uuid.uuid4().hex
+            output.convert("RGB").save(out_dir / f"{job_id}.png")
+            if guide_png:
+                (out_dir / f"{job_id}-guide.png").write_bytes(guide_png)
+            meta = {
+                "id": job_id,
+                "prompt": prompt,
+                "mode": mode,
+                "model": image_model.key,
+                "size": final_size,
+                "seed": s,
+                "guidance": guidance,
+                "steps": effective_steps,
+                "style_reference": style is not None,
+                "elapsed": elapsed,
+                "cached": cached,
+                "created": started,
+                "image_url": f"/outputs/{job_id}.png",
+                "guide_url": f"/outputs/{job_id}-guide.png" if guide_png else None,
+            }
+            record = {**meta, "owner": owner_tag(visitor)}
+            (out_dir / f"{job_id}.json").write_text(json.dumps(record, ensure_ascii=False, indent=2))
+            return meta
+
+        # Run the variations in parallel: total time is about one generation, not three.
+        results = await asyncio.gather(*(run_one(s) for s in seeds), return_exceptions=True)
+        variants = [r for r in results if isinstance(r, dict)]
+        if not variants:
+            raise next(r for r in results if isinstance(r, BaseException))
         maybe_cleanup()
-        return {**meta, "remaining_today": limiter.remaining(visitor)}
+        failed = len(results) - len(variants)
+        return {**variants[0], "variants": variants, "failed": failed, "remaining_today": limiter.remaining(visitor)}
 
     @app.get("/api/history")
     async def history(request: Request):

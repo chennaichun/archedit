@@ -6,12 +6,15 @@ Image editing for architecture and interiors. Turn a sketch into a render, swap 
 
 | Tool | What it does | How |
 |---|---|---|
+| **Image edit** | Any change in words: remove or repaint an object, add plants, declutter, polish as a listing photo | Whole image, or switch to **Brushed area** to change only what you paint |
 | **Sketch to render** | Line drawing or sketch → photorealistic render | The drawing is sent as-is (or a photo is traced into line art first) |
 | **Materials** | Brush a surface, pick what it is (wall, floor, ceiling…) and a material (brick, concrete, oak, marble…) | Crop around the brush, edit the crop, paste back through a feathered mask: pixels outside the brush never change |
 | **Lighting & time** | Golden hour, blue hour, night, overcast, snow | Whole-image edit that keeps geometry and camera |
 | **Style & staging** | Japandi, Scandinavian, industrial, mid-century, virtual staging | Whole-image edit that keeps walls, windows and camera |
 
-Each tool has presets with prompts written for that job. One lesson from testing: a vague "replace the surface" made the model pick its own target (it bricked the rug instead of the wall), so material presets always name the surface.
+Each tool has presets with prompts written for that job. Two lessons from testing with real edits:
+- A vague target makes the model pick its own. "Replace the surface" bricked the rug instead of the wall, and "remove the object" left the plant in place. Presets that act on a brushed area therefore always name the target (wall, floor, plant…).
+- Say what should be there instead. "Remove the plant" alone often came back unchanged on klein 4B; "remove it and show the empty wall and cabinet behind it" worked.
 
 ## Cost
 

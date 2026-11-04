@@ -110,7 +110,7 @@ def test_index_status_catalog(ctx):
     cat = ctx.client.get("/api/catalog").json()
     assert {m["key"] for m in cat["models"]} == {"klein-4b", "klein-9b", "dev"}
     assert [m["key"] for m in cat["modes"]] == ["edit", "sketch", "edges", "text", "local"]
-    assert [t["key"] for t in cat["tools"]] == ["sketch", "materials", "lighting", "style"]
+    assert [t["key"] for t in cat["tools"]] == ["edit", "sketch", "materials", "lighting", "style"]
     modes = {m["key"] for m in cat["modes"]}
     for tool in cat["tools"]:
         assert tool["mode"] in modes and tool["presets"]
@@ -489,3 +489,30 @@ def test_material_presets_name_the_target():
     assert "wall" in tool.targets
     for preset in tool.presets:
         assert "{target}" in preset.prompt
+
+
+def test_image_edit_tool():
+    from app.catalog import TOOLS
+
+    tool = TOOLS["edit"]
+    assert tool.brushable and tool.mode == "edit"
+    by_label = {p.label: p for p in tool.presets}
+    assert by_label["Remove object"].area and by_label["Repaint"].area
+    assert "{target}" in by_label["Remove object"].prompt and "plant" in tool.targets
+    assert not by_label["Declutter"].area
+
+
+def test_remove_object_on_brushed_area(ctx):
+    from app.catalog import TOOLS
+
+    prompt = next(p.prompt for p in TOOLS["edit"].presets if p.label == "Remove object").replace("{target}", "plant")
+    src = real_png()
+    r = ctx.client.post(
+        "/api/generate",
+        files={"image": ("a.png", src, "image/png"), "mask": ("m.png", mask_png(768, 512, (20, 250, 150, 340)), "image/png")},
+        data={"prompt": prompt, "mode": "local"},
+    )
+    assert r.status_code == 200, r.text
+    out = np.array(Image.open(io.BytesIO(ctx.client.get(r.json()["image_url"]).content)).convert("RGB")).astype(int)
+    orig = np.array(Image.open(io.BytesIO(src)).convert("RGB")).astype(int)
+    assert (out[:, 300:] == orig[:, 300:]).all()  # right of the brushed plant: untouched

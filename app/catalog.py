@@ -90,6 +90,8 @@ KEEP_GEOMETRY = (
 class Preset:
     label: str
     prompt: str
+    # True when the preset only makes sense on a brushed area ("remove the object").
+    area: bool = False
 
 
 @dataclass(frozen=True)
@@ -102,6 +104,8 @@ class Tool:
     presets: tuple[Preset, ...]
     # Tools whose prompts contain "{target}" let the user pick what is being changed.
     targets: tuple[str, ...] = ()
+    # Tools that can run on the whole image or only on a brushed area.
+    brushable: bool = False
 
 
 def _render(scene: str) -> str:
@@ -135,6 +139,34 @@ def _style(style: str) -> str:
 TOOLS: dict[str, Tool] = {
     t.key: t
     for t in [
+        Tool(
+            "edit", "Image edit", "edit",
+            "Describe any change. Switch to \"Brushed area\" to change only the part you paint.",
+            "sample_input.png",
+            (
+                Preset("Remove object", (
+                    # Describing what should be there instead works better than "remove X": with only
+                    # "remove", klein 4B often returned the object unchanged.
+                    "Remove the {target} from image 0 completely. Where it was, show the empty space behind it: "
+                    "continue the surrounding wall, floor and furniture surfaces as if the {target} had never "
+                    "been there."), area=True),
+                Preset("Add plants", (
+                    "Add two large leafy indoor plants in simple ceramic pots to image 0, placed naturally on "
+                    "the floor, with matching light and shadows.")),
+                Preset("Declutter", (
+                    "Declutter image 0: clear loose items from tables, counters and shelves, tidy the bedding "
+                    "and cushions. Keep the furniture, architecture and camera angle exactly the same.")),
+                Preset("Listing photo", (
+                    "Make image 0 look like a professional real-estate photo: bright balanced exposure, "
+                    "neutral white balance, crisp detail and straight vertical lines. Keep every object, "
+                    "the layout and the camera angle exactly the same.")),
+                Preset("Repaint", (
+                    "Repaint the {target} in image 0 in a soft sage green matte finish, keeping its shape, "
+                    "texture and shadows."), area=True),
+            ),
+            targets=("plant", "chair", "lamp", "rug", "TV", "picture frame", "table", "sofa"),
+            brushable=True,
+        ),
         Tool(
             "sketch", "Sketch to render", "sketch",
             "Upload a line drawing or sketch. Turn on \"Trace a photo\" to start from a photo instead.",

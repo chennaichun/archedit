@@ -61,8 +61,14 @@ function selectTool(key) {
   for (const b of $("tools").children) b.setAttribute("aria-selected", b.dataset.k === key);
   $("toolHint").textContent = tool.hint;
   $("traceBox").hidden = key !== "sketch";
+  $("scopeBox").hidden = !tool.brushable;
+  state.area = false;
+  $("scopeWhole").setAttribute("aria-pressed", true);
+  $("scopeArea").setAttribute("aria-pressed", false);
   $("targetBox").hidden = !tool.targets.length;
-  $("target").replaceChildren(...tool.targets.map(t => new Option(t, t)));
+  $("targetList").replaceChildren(...tool.targets.map(t => new Option(t)));
+  $("target").value = tool.targets[0] || "";
+  $("targetLbl").textContent = tool.key === "materials" ? "Surface to change" : "Object (for Remove and Repaint)";
   const box = $("presets"); box.replaceChildren();
   tool.presets.forEach((p, i) => {
     const b = document.createElement("button");
@@ -78,15 +84,26 @@ function selectTool(key) {
 function currentMode() {
   const tool = state.tool;
   if (tool.key === "sketch" && $("trace").checked) return "edges";
+  if (tool.brushable && state.area) return "local";
   return tool.mode;
 }
 function applyPreset(i) {
   state.preset = i;
-  $("prompt").value = state.tool.presets[i].prompt.replaceAll("{target}", $("target").value || "surface");
+  const preset = state.tool.presets[i];
+  $("prompt").value = preset.prompt.replaceAll("{target}", $("target").value.trim() || "object");
   [...$("presets").children].forEach((b, j) => b.setAttribute("aria-pressed", i === j));
+  if (state.tool.brushable && preset.area !== !!state.area) setScope(preset.area);
 }
-$("target").onchange = () => { if (state.preset != null) applyPreset(state.preset); };
+$("target").oninput = () => { if (state.preset != null) applyPreset(state.preset); };
 $("trace").onchange = () => selectMode(currentMode());
+function setScope(area) {
+  state.area = area;
+  $("scopeWhole").setAttribute("aria-pressed", !area);
+  $("scopeArea").setAttribute("aria-pressed", area);
+  selectMode(currentMode());
+}
+$("scopeWhole").onclick = () => setScope(false);
+$("scopeArea").onclick = () => setScope(true);
 $("prompt").addEventListener("input", () => { state.preset = null; [...$("presets").children].forEach(b => b.setAttribute("aria-pressed", false)); });
 
 function selectMode(key) {

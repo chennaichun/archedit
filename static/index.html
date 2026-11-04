@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ControlNet Studio</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Source+Sans+3:wght@400;600;700&family=Source+Serif+4:opsz,wght@8..60,600;8..60,900&family=JetBrains+Mono:wght@400;600&display=swap">
+<link rel="stylesheet" href="/static/style.css?v=4">
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>ControlNet Studio</h1>
+    <span class="pill" id="statusPill">…</span>
+  </header>
+
+  <div class="main">
+    <aside class="panel" aria-label="Settings">
+      <div class="field">
+        <label for="idea">Idea</label>
+        <textarea id="idea" rows="2">Change the bedspread to dark green velvet</textarea>
+        <button class="btn ghost" id="askClaude" title="Claude writes a prompt from your idea and the input image">Write prompt with Claude</button>
+      </div>
+      <div class="field">
+        <label for="prompt">Prompt</label>
+        <textarea id="prompt" rows="5">Restyle the bedroom in image 0 as a warm Japandi space: light oak floor, linen bedding in sand and beige tones, soft afternoon sunlight through the large window, a few indoor plants, calm neutral palette, clean uncluttered surfaces, realistic interior photography.</textarea>
+      </div>
+      <div class="field">
+        <span class="lbl" id="modesLbl">Mode</span>
+        <div class="types" id="modes" role="group" aria-labelledby="modesLbl"></div>
+      </div>
+      <div class="field" id="brushBox" hidden>
+        <div class="row"><label for="brush">Brush</label><output id="brushOut">40</output></div>
+        <input type="range" id="brush" min="8" max="160" value="40">
+        <button class="btn ghost" id="clearMask" type="button">Clear area</button>
+      </div>
+      <div class="field" id="cannyBox" hidden>
+        <div class="row"><label for="low">Line detail</label><output id="lowOut">100</output></div>
+        <input type="range" id="low" min="10" max="250" value="100" title="Lower means more lines">
+      </div>
+      <div class="field">
+        <label for="model">Model</label>
+        <select id="model"></select>
+      </div>
+      <div class="two">
+        <div class="field">
+          <label for="size">Size</label>
+          <select id="size"></select>
+        </div>
+        <div class="field">
+          <label for="seed">Seed</label>
+          <input type="number" id="seed" value="-1" title="-1 = random">
+        </div>
+      </div>
+      <div class="field" id="stepsBox" hidden>
+        <div class="row"><label for="steps">Steps</label><output id="stepsOut">20</output></div>
+        <input type="range" id="steps" min="8" max="40" value="20">
+      </div>
+    </aside>
+
+    <div class="stage">
+      <section class="panel">
+        <div class="plates">
+          <figure>
+            <figcaption><span>Input</span><span id="srcInfo"></span></figcaption>
+            <div class="plate drop" id="drop" tabindex="0" role="button" aria-label="Upload image">
+              <img id="srcImg" alt="" hidden><canvas id="srcCanvas" hidden></canvas><span class="empty" id="srcEmpty">+ Image</span>
+            </div>
+          </figure>
+          <figure>
+            <figcaption><span>Control</span><span id="mapInfo"></span></figcaption>
+            <div class="plate"><img id="mapImg" alt="" hidden><span class="empty" id="mapEmpty">—</span></div>
+          </figure>
+          <figure>
+            <figcaption><span>Result</span><span id="outInfo"></span></figcaption>
+            <div class="plate"><img id="outImg" alt="" hidden><span class="empty" id="outEmpty">—</span>
+              <div class="progress" id="progress" hidden><div id="bar"></div></div>
+            </div>
+          </figure>
+        </div>
+        <input type="file" id="file" accept="image/*" hidden>
+        <input type="file" id="styleFile" accept="image/*" hidden>
+        <div class="btns">
+          <button class="btn primary" id="generate">Generate</button>
+          <button class="btn ghost" id="upload">Upload image</button>
+          <button class="btn ghost" id="styleBtn" title="Pick an image to use as a style reference">Style image</button>
+          <button class="btn ghost" id="useResult" title="Use the result as the new input and keep editing" hidden>Edit result</button>
+          <a class="btn ghost" id="openOut" href="#" target="_blank" rel="noopener" hidden>Full size</a>
+        </div>
+        <p class="note" id="status" role="status"></p>
+      </section>
+
+      <section class="panel" id="historyPanel" hidden>
+        <div class="history" id="history"></div>
+      </section>
+    </div>
+  </div>
+</div>
+<script src="/static/app.js?v=4"></script>
+</body>
+</html>

@@ -6,7 +6,7 @@
 <title>ArchEdit</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Source+Sans+3:wght@400;600;700&family=Source+Serif+4:opsz,wght@8..60,600;8..60,900&family=JetBrains+Mono:wght@400;600&display=swap">
-<link rel="stylesheet" href="/static/style.css?v=8">
+<link rel="stylesheet" href="/static/style.css?v=10">
 </head>
 <body>
 <div class="wrap">
@@ -105,10 +105,22 @@
           <button class="btn primary" id="generate">Generate</button>
           <button class="btn ghost" id="upload">Upload image</button>
           <button class="btn ghost" id="styleBtn" title="Pick an image to use as a style reference">Style image</button>
-          <button class="btn ghost" id="useResult" title="Use the result as the new input and keep editing" hidden>Edit result</button>
           <a class="btn ghost" id="openOut" href="#" target="_blank" rel="noopener" hidden>Full size</a>
         </div>
         <p class="note" id="status" role="status"></p>
+      </section>
+
+      <section class="panel" id="roundsPanel" hidden>
+        <div class="rounds-head">
+          <h2>Rounds</h2>
+          <div class="btns">
+            <button class="btn ghost" id="undoRound" type="button">Undo</button>
+            <button class="btn ghost" id="redoRound" type="button">Redo</button>
+            <button class="btn ghost" id="resetRounds" type="button">Original</button>
+          </div>
+        </div>
+        <ol class="rounds" id="rounds"></ol>
+        <p class="note">Each edit starts from the last result. Pick an earlier round to branch from it.</p>
       </section>
 
       <section class="panel" id="historyPanel" hidden>
@@ -117,6 +129,6 @@
     </div>
   </div>
 </div>
-<script src="/static/app.js?v=9"></script>
+<script src="/static/app.js?v=11"></script>
 </body>
 </html>

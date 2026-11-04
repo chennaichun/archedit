@@ -1,6 +1,6 @@
 (() => {
 const $ = id => document.getElementById(id);
-const state = { mode: "sketch", tool: null, tools: {}, models: {}, source: null, sourceIsExample: false, style: null, busy: false, timer: 0, seq: 0 };
+const state = { rounds: [], round: -1, mode: "sketch", tool: null, tools: {}, models: {}, source: null, sourceIsExample: false, style: null, busy: false, timer: 0, seq: 0 };
 
 async function api(path, opts = {}) {
   const res = await fetch(path, opts);
@@ -30,7 +30,7 @@ async function boot() {
     pill.className = "pill " + (st.cloudflare_ready ? "ok" : "bad");
     showRemaining(st.remaining_today);
     if (!st.claude_ready) $("askClaude").hidden = true;
-    for (const s of cat.sizes) $("size").add(new Option(s.replace("x", " × "), s));
+    for (const s of cat.sizes) $("size").add(new Option(s === "auto" ? "Match input" : s.replace("x", " × "), s));
     for (const m of cat.models) {
       state.models[m.key] = m;
       const o = new Option(`${m.label} (free ${m.free_per_day}/day)`, m.key);
@@ -179,11 +179,16 @@ function onModel() { $("stepsBox").hidden = !state.models[$("model").value]?.adj
 $("model").onchange = onModel;
 
 /* ---------- source image ---------- */
-function setSource(file, isExample = false) {
+function setSource(file, isExample = false, keepRounds = false) {
   if (!file || !file.type.startsWith("image/")) { setStatus("Choose an image file", true); return; }
   state.source = file;
   state.sourceIsExample = isExample;
   const url = URL.createObjectURL(file);
+  if (!keepRounds) {  // a new image starts a new editing session
+    state.rounds = [{ file, url, label: "Original", prompt: "" }];
+    state.round = 0;
+    renderRounds();
+  }
   show("srcImg", "srcEmpty", url);
   $("srcInfo").textContent = file.name || "";
   const img = new Image();
@@ -248,7 +253,7 @@ async function preview() {
     const blob = await (await api("/api/preview", { method: "POST", body: fd })).blob();
     if (seq !== state.seq) return;
     show("mapImg", "mapEmpty", URL.createObjectURL(blob));
-    $("mapInfo").textContent = $("size").value;
+    $("mapInfo").textContent = "";
   } catch (e) {
     if (seq === state.seq) setStatus(e.message, true);
   }
@@ -310,8 +315,8 @@ $("generate").onclick = async () => {
     const r = await (await api("/api/generate", { method: "POST", body: fd })).json();
     show("outImg", "outEmpty", r.image_url);
     $("openOut").href = r.image_url; $("openOut").hidden = false;
-    $("useResult").hidden = false;
     $("outInfo").textContent = `seed ${r.seed} · ${r.cached ? "cached" : r.elapsed + "s"}`;
+    await addRound(r, fd.get("prompt"));
     showRemaining(r.remaining_today);
     if (r.guide_url) { show("mapImg", "mapEmpty", r.guide_url); $("mapInfo").textContent = state.mode === "local" ? "Crop sent" : r.size; }
     loadHistory();
@@ -325,13 +330,60 @@ $("generate").onclick = async () => {
   }
 };
 
-$("useResult").onclick = async () => {
-  try {
-    const blob = await (await api($("outImg").src)).blob();
-    setSource(new File([blob], "result.png", { type: "image/png" }));
-    if (state.tool.key === "sketch") selectTool("materials");  // a render is a photo now: keep editing it
-  } catch (e) { setStatus(e.message, true); }
-};
+/* ---------- multi-round editing ---------- */
+// Every result becomes the input of the next round. Going back to an earlier
+// round and editing again branches: the later rounds are replaced.
+async function addRound(r, prompt) {
+  const blob = await (await api(r.image_url)).blob();
+  const n = state.round + 1;
+  const file = new File([blob], `round-${n}.png`, { type: "image/png" });
+  state.rounds = state.rounds.slice(0, state.round + 1);
+  state.rounds.push({ file, url: r.image_url, label: state.tool.label, prompt, guide: r.guide_url });
+  state.round = n;
+  setSource(file, false, true);
+  // A render is a photo now, so the next round edits it rather than re-rendering lines.
+  if (state.tool.key === "sketch") selectTool("edit");
+  renderRounds();
+}
+function goToRound(i) {
+  if (i < 0 || i >= state.rounds.length || i === state.round) return;
+  state.round = i;
+  const r = state.rounds[i];
+  setSource(r.file, false, true);
+  if (i > 0) {
+    show("outImg", "outEmpty", r.url);
+    $("openOut").href = r.url; $("openOut").hidden = false;
+    $("outInfo").textContent = `round ${i}`;
+  } else {
+    hide("outImg", "outEmpty"); $("openOut").hidden = true; $("outInfo").textContent = "";
+  }
+  renderRounds();
+}
+function renderRounds() {
+  const list = $("rounds"); list.replaceChildren();
+  $("roundsPanel").hidden = state.rounds.length < 2;
+  state.rounds.forEach((r, i) => {
+    const li = document.createElement("li");
+    const b = document.createElement("button");
+    b.type = "button"; b.title = r.prompt || r.label;
+    if (i === state.round) b.setAttribute("aria-current", "step");
+    if (i > state.round) b.classList.add("future");
+    const img = document.createElement("img"); img.src = r.url; img.alt = "";
+    const cap = document.createElement("span"); cap.className = "cap";
+    const num = document.createElement("span"); num.className = "num"; num.textContent = i;
+    const lbl = document.createElement("span"); lbl.textContent = r.label;
+    cap.append(num, lbl); b.append(img, cap);
+    b.onclick = () => goToRound(i);
+    li.appendChild(b); list.appendChild(li);
+  });
+  $("undoRound").disabled = state.round <= 0;
+  $("redoRound").disabled = state.round >= state.rounds.length - 1;
+  $("resetRounds").disabled = state.round === 0;
+  list.querySelector('[aria-current="step"]')?.scrollIntoView({ block: "nearest", inline: "nearest" });
+}
+$("undoRound").onclick = () => goToRound(state.round - 1);
+$("redoRound").onclick = () => goToRound(state.round + 1);
+$("resetRounds").onclick = () => goToRound(0);
 
 /* ---------- history ---------- */
 async function loadHistory() {
@@ -348,7 +400,6 @@ async function loadHistory() {
         show("outImg", "outEmpty", it.image_url);
         $("openOut").href = it.image_url; $("openOut").hidden = false;
         $("outInfo").textContent = `seed ${it.seed}`;
-        $("useResult").hidden = false;
         $("prompt").value = it.prompt;
         $("seed").value = it.seed;
         if (state.models[it.model]) { $("model").value = it.model; onModel(); }

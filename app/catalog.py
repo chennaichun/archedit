@@ -72,7 +72,10 @@ MODES: dict[str, Mode] = {
 }
 
 # FLUX.2 works on any size 256-1920; these are ~1 MP presets.
-SIZES = ["1024x1024", "1216x832", "832x1216", "1344x768", "768x1344", "1152x896", "896x1152"]
+# "auto" keeps the input image's own aspect ratio at about 1 MP. It is the default
+# because multi-round editing feeds each result back in: a fixed size would crop
+# the picture a little more every round.
+SIZES = ["auto", "1024x1024", "1216x832", "832x1216", "1344x768", "768x1344", "1152x896", "896x1152"]
 
 
 # ---------------------------------------------------------------------------
@@ -144,22 +147,22 @@ TOOLS: dict[str, Tool] = {
             "Describe any change. Switch to \"Brushed area\" to change only the part you paint.",
             "sample_input.png",
             (
+                Preset("Declutter", (
+                    "Declutter image 0: clear loose items from tables, counters and shelves, tidy the bedding "
+                    "and cushions. Keep the furniture, architecture and camera angle exactly the same.")),
+                Preset("Add plants", (
+                    "Add two large leafy indoor plants in simple ceramic pots to image 0, placed naturally on "
+                    "the floor, with matching light and shadows.")),
+                Preset("Listing photo", (
+                    "Make image 0 look like a professional real-estate photo: bright balanced exposure, "
+                    "neutral white balance, crisp detail and straight vertical lines. Keep every object, "
+                    "the layout and the camera angle exactly the same.")),
                 Preset("Remove object", (
                     # Describing what should be there instead works better than "remove X": with only
                     # "remove", klein 4B often returned the object unchanged.
                     "Remove the {target} from image 0 completely. Where it was, show the empty space behind it: "
                     "continue the surrounding wall, floor and furniture surfaces as if the {target} had never "
                     "been there."), area=True),
-                Preset("Add plants", (
-                    "Add two large leafy indoor plants in simple ceramic pots to image 0, placed naturally on "
-                    "the floor, with matching light and shadows.")),
-                Preset("Declutter", (
-                    "Declutter image 0: clear loose items from tables, counters and shelves, tidy the bedding "
-                    "and cushions. Keep the furniture, architecture and camera angle exactly the same.")),
-                Preset("Listing photo", (
-                    "Make image 0 look like a professional real-estate photo: bright balanced exposure, "
-                    "neutral white balance, crisp detail and straight vertical lines. Keep every object, "
-                    "the layout and the camera angle exactly the same.")),
                 Preset("Repaint", (
                     "Repaint the {target} in image 0 in a soft sage green matte finish, keeping its shape, "
                     "texture and shadows."), area=True),

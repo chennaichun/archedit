@@ -16,6 +16,14 @@ Each tool has presets with prompts written for that job. Two lessons from testin
 - A vague target makes the model pick its own. "Replace the surface" bricked the rug instead of the wall, and "remove the object" left the plant in place. Presets that act on a brushed area therefore always name the target (wall, floor, plant…).
 - Say what should be there instead. "Remove the plant" alone often came back unchanged on klein 4B; "remove it and show the empty wall and cabinet behind it" worked.
 
+## Multi-round editing
+
+Every result becomes the input of the next round, so edits stack: brick wall → blue hour → declutter. The **Rounds** timeline shows each step; **Undo**, **Redo** and **Original** move through it, and editing from an earlier round branches (later rounds are replaced). Uploading a new image starts a new session.
+
+Two details make rounds hold up:
+- **Size defaults to "Match input"** (≈1 MP in the input's aspect ratio). A fixed size cropped the photo a bit more every round; in testing, a square output cut off the brick wall added the round before.
+- **Brushed-area rounds are pixel-exact outside the brush**, so they don't degrade the rest of the image. Whole-image rounds (lighting, style) redraw the scene from a reference image capped at 504 px by Cloudflare, so fine detail can drift; doing whole-image changes first and brushed changes after keeps the result sharpest.
+
 ## Cost
 
 | Service | Free? | Notes |
@@ -79,7 +87,7 @@ Each browser gets an anonymous `HttpOnly` cookie, so visitors only see their own
 - **Sketch**: the input is already a drawing and is rendered as drawn.
 - **Traced photo** (`edges`): traces the photo into line art, then redraws from it.
 - **Text**: no reference image.
-- **Local**: brush an area and only that area changes (used by Materials). The crop follows the brushed area's shape plus context. **Edit result** lets you continue with the next change.
+- **Local**: brush an area and only that area changes (used by Materials). The crop follows the brushed area's shape plus context. Each result feeds the next round.
 - **Style image**: optionally add a second image as a style reference.
 
 Examples come from the original [StableDiffusionWithGradio](https://github.com/chennaichun/StableDiffusionWithGradio) repo (`examples/`): an interior line drawing for Sketch to render and a bedroom photo for the other tools.

@@ -516,3 +516,25 @@ def test_remove_object_on_brushed_area(ctx):
     out = np.array(Image.open(io.BytesIO(ctx.client.get(r.json()["image_url"]).content)).convert("RGB")).astype(int)
     orig = np.array(Image.open(io.BytesIO(src)).convert("RGB")).astype(int)
     assert (out[:, 300:] == orig[:, 300:]).all()  # right of the brushed plant: untouched
+
+
+def test_auto_size_keeps_the_input_aspect(ctx):
+    """Multi-round editing feeds results back in, so 'auto' must not crop the photo."""
+    r = ctx.client.post(
+        "/api/generate",
+        files={"image": ("a.png", real_png(), "image/png")},  # 768x512 = 3:2
+        data={"prompt": "relight", "mode": "edit"},  # size defaults to auto
+    )
+    assert r.status_code == 200, r.text
+    parts = parse_multipart(ctx.cf.requests[-1])
+    w, h = int(parts["width"]), int(parts["height"])
+    assert w % 16 == 0 and h % 16 == 0
+    assert abs(w / h - 1.5) < 0.02 and 0.9e6 < w * h < 1.1e6
+    guide = Image.open(io.BytesIO(ctx.client.get(r.json()["guide_url"]).content))
+    assert abs(guide.width / guide.height - 1.5) < 0.02  # nothing cropped away
+
+
+def test_text_mode_auto_size_is_square(ctx):
+    text_edit(ctx.client, size="auto")
+    parts = parse_multipart(ctx.cf.requests[-1])
+    assert parts["width"] == b"1024" and parts["height"] == b"1024"

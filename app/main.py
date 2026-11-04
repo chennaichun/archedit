@@ -47,11 +47,23 @@ STYLE_HINT = " Match the style, colors and mood of image 1."
 LOCAL_HINT = " Keep everything else in image 0 the same, with the same framing, camera angle, perspective and lighting."
 
 
-def parse_size(size: str) -> tuple[int, int]:
+def parse_size(size: str, source: Optional[Image.Image] = None) -> tuple[int, int]:
     if size not in SIZES:
         raise HTTPException(400, f"Unsupported size {size}.")
+    if size == "auto":
+        return auto_size(source)
     w, h = size.split("x")
     return int(w), int(h)
+
+
+def auto_size(source: Optional[Image.Image], megapixels: float = 1.0) -> tuple[int, int]:
+    """About 1 MP in the source's aspect ratio (clamped to 1:3..3:1), multiples of 16."""
+    if source is None:
+        return 1024, 1024
+    ratio = min(3.0, max(1 / 3, source.width / source.height))
+    w = (megapixels * 1_000_000 * ratio) ** 0.5
+    h = w / ratio
+    return (int(min(1920, max(256, round(w / 16) * 16))), int(min(1920, max(256, round(h / 16) * 16))))
 
 
 async def read_image(upload: Optional[UploadFile]) -> Optional[Image.Image]:
@@ -174,17 +186,17 @@ def create_app(
     async def preview(
         image: UploadFile = File(...),
         mode: str = Form("edit"),
-        size: str = Form("1024x1024"),
+        size: str = Form("auto"),
         low: int = Form(100),
         high: int = Form(200),
     ):
         """Show what will be sent to FLUX.2 as image 0 (cropped photo or line art)."""
         if mode not in MODES:
             raise HTTPException(400, f"Unknown mode: {mode}")
-        width, height = parse_size(size)
         src = await read_image(image)
         if src is None:
             raise HTTPException(400, "Upload an image.")
+        width, height = parse_size(size, src)
         try:
             guide = await asyncio.to_thread(guide_image, src, mode, width, height, low, high)
         except PreprocessError as e:
@@ -216,7 +228,7 @@ def create_app(
         prompt: str = Form(...),
         mode: str = Form("edit"),
         model: str = Form(""),
-        size: str = Form("1024x1024"),
+        size: str = Form("auto"),
         seed: int = Form(-1),
         guidance: Optional[float] = Form(None),
         steps: Optional[int] = Form(None),
@@ -239,7 +251,8 @@ def create_app(
         if steps is not None and not 1 <= steps <= 50:
             raise HTTPException(400, "Steps must be between 1 and 50.")
         image_model = get_model(model or settings.default_image_model)
-        width, height = parse_size(size)
+        if size not in SIZES:
+            raise HTTPException(400, f"Unsupported size {size}.")
 
         references: list[bytes] = []
         guide_png: Optional[bytes] = None
@@ -262,12 +275,15 @@ def create_app(
             src = await read_image(image)
             if src is None:
                 raise HTTPException(400, "This mode needs an image. Upload one first.")
+            width, height = parse_size(size, src)
             try:
                 guide = await asyncio.to_thread(guide_image, src, mode, width, height, low, high)
             except PreprocessError as e:
                 raise HTTPException(400, str(e))
             guide_png = png_bytes(guide)
             references.append(reference_png(guide))
+        else:
+            width, height = parse_size(size)
         style = await read_image(style_image)
         if style is not None:
             if not references:  # keep "image 1" meaning the style reference

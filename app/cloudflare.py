@@ -7,6 +7,7 @@ input_image_0 .. input_image_3. The response is JSON with a base64 image.
 
 from __future__ import annotations
 
+import asyncio
 import base64
 from dataclasses import dataclass, field
 from typing import Optional
@@ -39,9 +40,13 @@ class ImageAPIError(Exception):
 
 
 class CloudflareImageClient:
-    def __init__(self, settings: Settings, http: Optional[httpx.AsyncClient] = None):
+    max_retries = 2
+    backoff_base = 1.0  # seconds; waits 1s, then 2s
+
+    def __init__(self, settings: Settings, http: Optional[httpx.AsyncClient] = None, sleep=asyncio.sleep):
         self.settings = settings
         self._http = http
+        self._sleep = sleep
 
     @property
     def http(self) -> httpx.AsyncClient:
@@ -77,12 +82,25 @@ class CloudflareImageClient:
 
         url = f"{API_BASE}/{self.settings.cf_account_id}/ai/run/{req.model.model_id}"
         headers = {"Authorization": f"Bearer {self.settings.cf_api_token}"}
-        try:
-            resp = await self.http.post(url, headers=headers, files=parts)
-        except httpx.TimeoutException:
-            raise ImageAPIError("Cloudflare timed out. Try again.", 504)
-        except httpx.HTTPError:
-            raise ImageAPIError("Could not reach Cloudflare. Check your internet connection.", 502)
+
+        # Retry transient failures (network errors, timeouts, 5xx) with exponential
+        # backoff. 4xx errors (bad token, quota used up, bad input) are not retried:
+        # repeating them would fail the same way.
+        attempts = self.max_retries + 1
+        for attempt in range(attempts):
+            last = attempt == attempts - 1
+            try:
+                resp = await self.http.post(url, headers=headers, files=parts)
+            except httpx.TimeoutException:
+                if last:
+                    raise ImageAPIError("Cloudflare timed out. Try again.", 504)
+            except httpx.HTTPError:
+                if last:
+                    raise ImageAPIError("Could not reach Cloudflare. Check your internet connection.", 502)
+            else:
+                if resp.status_code < 500 or last:
+                    break
+            await self._sleep(self.backoff_base * 2**attempt)
 
         payload = _json(resp)
         if resp.status_code >= 400 or payload.get("success") is False:

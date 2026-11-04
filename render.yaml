@@ -1,0 +1,15 @@
+# Render Blueprint: New > Blueprint > pick this repo. Builds the Dockerfile on every push to main.
+services:
+  - type: web
+    name: controlnet-studio
+    runtime: docker
+    plan: free
+    healthCheckPath: /healthz
+    autoDeploy: true
+    envVars:
+      - key: CLOUDFLARE_ACCOUNT_ID
+        sync: false   # entered in the Render dashboard, never committed
+      - key: CLOUDFLARE_API_TOKEN
+        sync: false
+      - key: ANTHROPIC_API_KEY
+        sync: false   # optional

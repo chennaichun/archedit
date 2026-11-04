@@ -15,6 +15,12 @@ const setStatus = (msg = "", warn = false) => { $("status").textContent = msg; $
 const show = (imgId, emptyId, url) => { const i = $(imgId); i.src = url; i.hidden = false; $(emptyId).hidden = true; };
 const hide = (imgId, emptyId) => { $(imgId).hidden = true; $(emptyId).hidden = false; };
 
+function showRemaining(n) {
+  const el = $("remaining");
+  el.hidden = n == null;
+  if (n != null) el.textContent = `${n} edit${n === 1 ? "" : "s"} left today`;
+}
+
 /* ---------- boot ---------- */
 async function boot() {
   try {
@@ -22,6 +28,8 @@ async function boot() {
     const pill = $("statusPill");
     pill.textContent = st.cloudflare_ready ? "Cloudflare connected" : "Cloudflare not set up";
     pill.className = "pill " + (st.cloudflare_ready ? "ok" : "bad");
+    showRemaining(st.remaining_today);
+    if (!st.claude_ready) $("askClaude").hidden = true;
     for (const s of cat.sizes) $("size").add(new Option(s.replace("x", " × "), s));
     for (const m of cat.models) {
       state.models[m.key] = m;
@@ -204,10 +212,11 @@ $("askClaude").onclick = async () => {
   const btn = $("askClaude"); btn.disabled = true; btn.textContent = "Writing…";
   setStatus();
   try {
-    const s = await (await api("/api/prompt", {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ idea, mode: state.mode, use_image: !!state.source }),
-    })).json();
+    const fd = new FormData();
+    fd.append("idea", idea);
+    fd.append("mode", state.mode);
+    if (state.source) fd.append("image", state.source);
+    const s = await (await api("/api/prompt", { method: "POST", body: fd })).json();
     $("prompt").value = s.prompt;
     if (s.mode !== state.mode && !(s.mode !== "text" && !state.source)) selectMode(s.mode);
     setStatus(s.notes);
@@ -250,7 +259,8 @@ $("generate").onclick = async () => {
     show("outImg", "outEmpty", r.image_url);
     $("openOut").href = r.image_url; $("openOut").hidden = false;
     $("useResult").hidden = false;
-    $("outInfo").textContent = `seed ${r.seed} · ${r.elapsed}s`;
+    $("outInfo").textContent = `seed ${r.seed} · ${r.cached ? "cached" : r.elapsed + "s"}`;
+    showRemaining(r.remaining_today);
     if (r.guide_url) { show("mapImg", "mapEmpty", r.guide_url); $("mapInfo").textContent = state.mode === "local" ? "Crop sent" : r.size; }
     loadHistory();
   } catch (e) {

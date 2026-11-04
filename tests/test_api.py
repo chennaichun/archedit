@@ -76,17 +76,23 @@ class FakeWriter:
         return PromptSuggestion(prompt="a cozy room", mode="edges", notes="use line art")
 
 
-def make_ctx(tmp_path, cf: FakeCloudflare, ready=True):
+def make_ctx(tmp_path, cf: FakeCloudflare, ready=True, **overrides):
     settings = replace(
         Settings(),
         output_dir=tmp_path / "out",
         cf_account_id="acc123" if ready else "",
         cf_api_token="tok" if ready else "",
         default_image_model="klein-4b",
+        **overrides,
     )
     http = httpx.AsyncClient(transport=httpx.MockTransport(cf.handler))
     writer = FakeWriter()
-    app = create_app(settings=settings, image_client=CloudflareImageClient(settings, http), prompt_writer=writer)
+
+    async def no_sleep(_seconds):
+        return None
+
+    client = CloudflareImageClient(settings, http, sleep=no_sleep)
+    app = create_app(settings=settings, image_client=client, prompt_writer=writer)
     return SimpleNamespace(client=TestClient(app), cf=cf, writer=writer)
 
 
@@ -190,12 +196,24 @@ def test_not_configured(tmp_path):
     assert not c.cf.requests
 
 
-def test_prompt_uses_last_source_image(ctx):
-    ctx.client.post("/api/preview", files={"image": ("a.png", real_png(), "image/png")}, data={"mode": "edit"})
-    r = ctx.client.post("/api/prompt", json={"idea": "japanese bedroom", "mode": "edit", "use_image": True})
-    assert r.status_code == 200
+def test_prompt_sends_the_uploaded_image(ctx, monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test")
+    r = ctx.client.post(
+        "/api/prompt",
+        files={"image": ("a.png", real_png(), "image/png")},
+        data={"idea": "japanese bedroom", "mode": "edit"},
+    )
+    assert r.status_code == 200, r.text
     assert r.json()["mode"] == "edges"
     assert ctx.writer.calls[-1] == ("japanese bedroom", True, "edit")
+
+
+def test_prompt_without_claude_key(ctx, monkeypatch):
+    for k in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_PROFILE"):
+        monkeypatch.delenv(k, raising=False)
+    r = ctx.client.post("/api/prompt", data={"idea": "x"})
+    assert r.status_code == 503
+    assert not ctx.writer.calls
 
 
 # ---- Claude prompt writer ------------------------------------------------------------
@@ -317,3 +335,119 @@ def test_plan_crop_stays_inside_image():
     l, t, r_, b = plan.box
     assert 0 <= l < r_ <= 900 and 0 <= t < b <= 600
     assert r_ - l >= 256 and b - t >= 256
+
+
+# ---- public deployment: visitors, limits, cache, retries ---------------------------------
+
+def text_edit(client, **data):
+    return client.post("/api/generate", data={"prompt": "a cat", "mode": "text", **data})
+
+
+def test_history_is_per_visitor(tmp_path):
+    c = make_ctx(tmp_path, FakeCloudflare())
+    with c.client:
+        assert text_edit(c.client, prompt="mine").status_code == 200
+        assert [i["prompt"] for i in c.client.get("/api/history").json()["items"]] == ["mine"]
+        assert "owner" not in c.client.get("/api/history").json()["items"][0]
+        other = TestClient(c.client.app)  # a second browser: no cookie yet
+        with other:
+            assert other.get("/api/history").json()["items"] == []
+
+
+def test_visitor_cookie_is_http_only(ctx):
+    r = ctx.client.get("/api/status")
+    cookie = r.headers["set-cookie"]
+    assert "cs_visitor=" in cookie and "HttpOnly" in cookie
+    assert "set-cookie" not in ctx.client.get("/api/status").headers  # reused afterwards
+
+
+def test_daily_limit_per_visitor(tmp_path):
+    c = make_ctx(tmp_path, FakeCloudflare(), daily_limit_per_visitor=2)
+    with c.client:
+        assert text_edit(c.client).json()["remaining_today"] == 1
+        assert text_edit(c.client).json()["remaining_today"] == 0
+        r = text_edit(c.client)
+        assert r.status_code == 429 and "2 edits" in r.json()["detail"]
+        assert len(c.cf.requests) == 2  # the refused request never reached Cloudflare
+
+
+def test_daily_limit_total_across_visitors(tmp_path):
+    c = make_ctx(tmp_path, FakeCloudflare(), daily_limit_total=1)
+    with c.client:
+        assert text_edit(c.client).status_code == 200
+        with TestClient(c.client.app) as other:
+            r = text_edit(other)
+            assert r.status_code == 429 and "00:00 UTC" in r.json()["detail"]
+
+
+def test_fixed_seed_requests_are_cached(ctx):
+    first = text_edit(ctx.client, seed="7").json()
+    second = text_edit(ctx.client, seed="7").json()
+    assert len(ctx.cf.requests) == 1
+    assert first["cached"] is False and second["cached"] is True
+    text_edit(ctx.client, seed="8")
+    text_edit(ctx.client)  # random seed: never served from cache
+    assert len(ctx.cf.requests) == 3
+
+
+class FlakyCloudflare(FakeCloudflare):
+    def __init__(self, failures: int, fail_status: int = 503):
+        super().__init__()
+        self.failures, self.fail_status = failures, fail_status
+
+    def handler(self, request):
+        self.requests.append(request)
+        if self.failures > 0:
+            self.failures -= 1
+            return httpx.Response(self.fail_status, json={"success": False, "errors": [{"message": "busy"}]})
+        return httpx.Response(200, json=self.payload)
+
+
+def test_retries_transient_server_errors(tmp_path):
+    c = make_ctx(tmp_path, FlakyCloudflare(failures=2))
+    with c.client:
+        assert text_edit(c.client).status_code == 200
+    assert len(c.cf.requests) == 3
+
+
+def test_gives_up_after_max_retries(tmp_path):
+    c = make_ctx(tmp_path, FlakyCloudflare(failures=10))
+    with c.client:
+        assert text_edit(c.client).status_code == 502
+    assert len(c.cf.requests) == 3  # 1 try + 2 retries
+
+
+def test_does_not_retry_client_errors(tmp_path):
+    c = make_ctx(tmp_path, FlakyCloudflare(failures=10, fail_status=429))
+    with c.client:
+        assert text_edit(c.client).status_code == 429
+    assert len(c.cf.requests) == 1
+
+
+def test_healthz(ctx):
+    assert ctx.client.get("/healthz").json() == {"ok": True}
+
+
+def test_old_outputs_are_deleted(tmp_path):
+    import os
+    import time as _time
+
+    from app.guards import delete_old_outputs
+
+    old, new = tmp_path / "old.png", tmp_path / "new.png"
+    old.write_bytes(b"x"); new.write_bytes(b"x")
+    two_days_ago = _time.time() - 48 * 3600
+    os.utime(old, (two_days_ago, two_days_ago))
+    assert delete_old_outputs(tmp_path, ttl_hours=24) == 1
+    assert not old.exists() and new.exists()
+
+
+def test_daily_limiter_resets_at_utc_midnight():
+    from app.guards import DailyLimiter
+
+    now = [1_800_000_000.0]
+    lim = DailyLimiter(per_visitor=1, total=0, clock=lambda: now[0])
+    lim.record("a")
+    assert lim.check("a")
+    now[0] += 24 * 3600
+    assert lim.check("a") is None

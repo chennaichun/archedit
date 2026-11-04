@@ -1,0 +1,10 @@
+.env
+.venv
+.git
+.claude
+outputs
+tests
+.pytest_cache
+__pycache__
+examples/output*.png
+*.command

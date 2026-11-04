@@ -35,10 +35,20 @@ class Settings:
     # Server
     output_dir: Path = field(default_factory=lambda: Path(_env("OUTPUT_DIR", str(ROOT / "outputs"))))
     static_dir: Path = ROOT / "static"
+    # Public deployment guards. The Cloudflare free allowance is shared by every
+    # visitor, so cap both each visitor and the whole server per UTC day (0 = no cap).
+    daily_limit_per_visitor: int = field(default_factory=lambda: int(_env("DAILY_LIMIT_PER_VISITOR", "0")))
+    daily_limit_total: int = field(default_factory=lambda: int(_env("DAILY_LIMIT_TOTAL", "0")))
+    output_ttl_hours: float = field(default_factory=lambda: float(_env("OUTPUT_TTL_HOURS", "0")))
+    secure_cookies: bool = field(default_factory=lambda: _env("SECURE_COOKIES", "0") == "1")
 
     @property
     def cloudflare_ready(self) -> bool:
         return bool(self.cf_account_id and self.cf_api_token)
+
+    @property
+    def claude_ready(self) -> bool:
+        return any(os.environ.get(k) for k in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_PROFILE"))
 
 
 def get_settings() -> Settings:

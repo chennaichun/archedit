@@ -38,6 +38,27 @@ python3 -m venv .venv
 .venv/bin/uvicorn app.main:app --port 8765
 ```
 
+## Deploy
+
+The repo ships a `Dockerfile` and a Render Blueprint (`render.yaml`).
+
+1. Push the repo to GitHub.
+2. On [Render](https://render.com): **New → Blueprint**, pick the repo.
+3. Enter `CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_API_TOKEN` when asked (optionally `ANTHROPIC_API_KEY`). Every push to `main` redeploys.
+
+Any host that runs a Docker image works the same way; the container listens on `$PORT`.
+
+Public-deployment guards, all set in the Dockerfile and overridable with env vars:
+
+| Variable | Default in Docker | Why |
+|---|---|---|
+| `DAILY_LIMIT_PER_VISITOR` | 10 | One visitor can't use up the shared free allowance |
+| `DAILY_LIMIT_TOTAL` | 80 | Stay inside Cloudflare's ~90 free klein-4B images per day |
+| `OUTPUT_TTL_HOURS` | 24 | Generated images are deleted after a day |
+| `SECURE_COOKIES` | 1 | Visitor cookie only over HTTPS |
+
+Each browser gets an anonymous `HttpOnly` cookie, so visitors only see their own history. Requests with a fixed seed are cached, so repeating one costs nothing. Cloudflare 5xx errors and timeouts are retried twice with exponential backoff; 4xx errors are not retried. Limits, cache and history live in memory and on local disk, which fits a single small instance.
+
 ## Modes
 
 - **Restyle**: the photo is the reference; layout stays, style, materials and light change.

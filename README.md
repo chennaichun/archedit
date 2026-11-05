@@ -2,6 +2,8 @@
 
 Image editing for architecture and interiors. Turn a sketch into a render, swap materials on a brushed surface, relight a room, or restyle and stage it, while the building's geometry and camera stay put. Images are generated with FLUX.2 on Cloudflare Workers AI's free daily allowance, so no GPU is needed. Claude can write the prompt for you (optional).
 
+**Tutorial video (2 min, English):** [docs/tutorial/archedit-tutorial.mp4](docs/tutorial/archedit-tutorial.mp4) walks through uploading, presets, rounds, brushed edits, the chat agent and camera-move videos. It is recorded from the real app by `docs/tutorial/make_tutorial.py` (Playwright + macOS voice), so it can be re-recorded after UI changes.
+
 ## Tools
 
 | Tool | What it does | How |

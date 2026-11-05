@@ -7,3 +7,4 @@ outputs/
 .claude/
 examples/output*.png
 .DS_Store
+models/

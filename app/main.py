@@ -11,6 +11,7 @@ import hashlib
 import io
 import json
 import random
+import re
 import secrets
 import time
 import uuid
@@ -18,11 +19,14 @@ from contextlib import asynccontextmanager
 from typing import Optional
 
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import FileResponse, JSONResponse, Response
+from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from PIL import Image, UnidentifiedImageError
 
+from .align import align
+from .agent import AgentStop, Brain, ThreadStore, build_graph, make_brain, run_input
 from .catalog import MODES, SIZES, public_catalog
+from .video import FILL_PROMPT, DepthEstimator, OnnxDepth, VideoError, keyframe_budget, make_video, public_motions
 from .cloudflare import CloudflareImageClient, ImageAPIError, ImageRequest, get_model
 from .config import Settings, get_settings
 from .guards import DailyLimiter, ResultCache, delete_old_outputs
@@ -113,10 +117,16 @@ def create_app(
     settings: Optional[Settings] = None,
     image_client: Optional[CloudflareImageClient] = None,
     prompt_writer: Optional[PromptWriter] = None,
+    agent_brain: Optional[Brain] = None,
+    depth_estimator: Optional[DepthEstimator] = None,
 ) -> FastAPI:
     settings = settings or get_settings()
     image_client = image_client or CloudflareImageClient(settings)
     prompt_writer = prompt_writer or ClaudePromptWriter(settings)
+    if agent_brain is None and settings.agent_brain != "off":
+        agent_brain = make_brain(settings, image_client)
+    depth_estimator = depth_estimator or OnnxDepth(settings.model_dir)
+    video_slots = asyncio.Semaphore(1)  # videos run on this server's CPU: one at a time
     out_dir = settings.output_dir
     out_dir.mkdir(parents=True, exist_ok=True)
     limiter = DailyLimiter(settings.daily_limit_per_visitor, settings.daily_limit_total)
@@ -128,6 +138,30 @@ def create_app(
         if now - last_cleanup[0] >= CLEANUP_EVERY:
             last_cleanup[0] = now
             delete_old_outputs(out_dir, settings.output_ttl_hours, now)
+
+    async def fix_drift(reference: Image.Image, output: Image.Image) -> tuple[Image.Image, Optional[dict]]:
+        """Drift guard for whole-image rounds: warp the result back onto the input's framing."""
+        if not settings.align_rounds:
+            return output, None
+        ref = reference.convert("RGB").resize(output.size, Image.LANCZOS)
+        fixed, drift = await asyncio.to_thread(align, ref, output)
+        return fixed, drift.public()
+
+    def save_output(visitor: str, output: Image.Image, guide_png: Optional[bytes], meta: dict) -> dict:
+        """Write the image, its guide and a JSON record (with the owner hash) to out_dir."""
+        job_id = uuid.uuid4().hex
+        output.convert("RGB").save(out_dir / f"{job_id}.png")
+        if guide_png:
+            (out_dir / f"{job_id}-guide.png").write_bytes(guide_png)
+        meta = {
+            "id": job_id,
+            **meta,
+            "image_url": f"/outputs/{job_id}.png",
+            "guide_url": f"/outputs/{job_id}-guide.png" if guide_png else None,
+        }
+        record = {**meta, "owner": owner_tag(visitor)}
+        (out_dir / f"{job_id}.json").write_text(json.dumps(record, ensure_ascii=False, indent=2))
+        return meta
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
@@ -161,6 +195,10 @@ def create_app(
     async def _llm_error(_req, exc: LLMError):
         return JSONResponse({"detail": exc.message}, status_code=exc.status)
 
+    @app.exception_handler(VideoError)
+    async def _video_error(_req, exc: VideoError):
+        return JSONResponse({"detail": exc.message}, status_code=exc.status)
+
     @app.exception_handler(ImageAPIError)
     async def _image_error(_req, exc: ImageAPIError):
         return JSONResponse({"detail": exc.message}, status_code=exc.status)
@@ -176,12 +214,13 @@ def create_app(
             "claude_ready": settings.claude_ready,
             "default_model": settings.default_image_model,
             "claude_model": settings.claude_model,
+            "agent_brain": agent_brain.name if agent_brain else None,
             "remaining_today": limiter.remaining(visitor_id(request)),
         }
 
     @app.get("/api/catalog")
     async def catalog():
-        return public_catalog()
+        return {**public_catalog(), "motions": public_motions()}
 
     @app.post("/api/preview")
     async def preview(
@@ -261,6 +300,7 @@ def create_app(
         references: list[bytes] = []
         guide_png: Optional[bytes] = None
         plan = None
+        align_ref: Optional[Image.Image] = None  # whole-image edits are registered back onto this
         if mode == "local":
             src = await read_image(image)
             mask_img = await read_image(mask)
@@ -286,6 +326,8 @@ def create_app(
                 raise HTTPException(400, str(e))
             guide_png = png_bytes(guide)
             references.append(reference_png(guide))
+            if mode == "edit":
+                align_ref = guide
         else:
             width, height = parse_size(size)
         style = await read_image(style_image)
@@ -339,16 +381,14 @@ def create_app(
             except (UnidentifiedImageError, OSError):
                 raise HTTPException(502, "Cloudflare returned something that is not an image.")
             final_size = out_size
+            drift = None
             if plan is not None:
                 output = await asyncio.to_thread(composite_local, plan, output)
                 final_size = f"{output.width}x{output.height}"
+            elif align_ref is not None:
+                output, drift = await fix_drift(align_ref, output)
 
-            job_id = uuid.uuid4().hex
-            output.convert("RGB").save(out_dir / f"{job_id}.png")
-            if guide_png:
-                (out_dir / f"{job_id}-guide.png").write_bytes(guide_png)
-            meta = {
-                "id": job_id,
+            return save_output(visitor, output, guide_png, {
                 "prompt": prompt,
                 "mode": mode,
                 "model": image_model.key,
@@ -360,12 +400,8 @@ def create_app(
                 "elapsed": elapsed,
                 "cached": cached,
                 "created": started,
-                "image_url": f"/outputs/{job_id}.png",
-                "guide_url": f"/outputs/{job_id}-guide.png" if guide_png else None,
-            }
-            record = {**meta, "owner": owner_tag(visitor)}
-            (out_dir / f"{job_id}.json").write_text(json.dumps(record, ensure_ascii=False, indent=2))
-            return meta
+                "drift": drift,
+            })
 
         # Run the variations in parallel: total time is about one generation, not three.
         results = await asyncio.gather(*(run_one(s) for s in seeds), return_exceptions=True)
@@ -375,6 +411,191 @@ def create_app(
         maybe_cleanup()
         failed = len(results) - len(variants)
         return {**variants[0], "variants": variants, "failed": failed, "remaining_today": limiter.remaining(visitor)}
+
+    # ---------------- chat editing agent (LangGraph) ----------------
+    async def agent_edit(image_file: str, prompt: str, visitor: str, model_key: str, mask_file: Optional[str]) -> dict:
+        """One round for the agent: the same path as /api/generate in edit mode, or in
+        local mode (crop, edit, paste back) when the user brushed an area."""
+        image_model = get_model(model_key or settings.default_image_model)
+        refusal = limiter.check(visitor, 1)
+        if refusal:
+            raise AgentStop(refusal)
+        src = Image.open(out_dir / image_file)
+        src.load()
+        src = src.convert("RGB")
+        plan = None
+        if mask_file:
+            mask_img = Image.open(out_dir / mask_file)
+            mask_img.load()
+            try:
+                plan = await asyncio.to_thread(plan_local_edit, src, mask_img)
+            except PreprocessError as e:
+                raise AgentStop(str(e))
+            width, height, guide = plan.gen_width, plan.gen_height, plan.crop
+            prompt_sent = prompt + LOCAL_HINT
+        else:
+            width, height = auto_size(src)
+            guide = await asyncio.to_thread(guide_image, src, "edit", width, height, 100, 200)
+            prompt_sent = prompt
+        seed = random.randint(0, 2**31 - 1)
+        started = time.time()
+        result = await image_client.generate(
+            ImageRequest(prompt=prompt_sent, model=image_model, width=width, height=height,
+                         references=[reference_png(guide)], seed=seed)
+        )
+        limiter.record(visitor)
+        try:
+            output = Image.open(io.BytesIO(result))
+            output.load()
+        except (UnidentifiedImageError, OSError):
+            raise ImageAPIError("Cloudflare returned something that is not an image.", 502)
+        drift = None
+        if plan is not None:
+            output = await asyncio.to_thread(composite_local, plan, output)
+        else:
+            output, drift = await fix_drift(guide, output)
+        return save_output(visitor, output, png_bytes(guide) if plan else None, {
+            "prompt": prompt, "mode": "local" if plan else "edit", "model": image_model.key, "size": f"{output.width}x{output.height}",
+            "seed": seed, "guidance": None, "steps": None, "style_reference": False,
+            "elapsed": round(time.time() - started, 1), "cached": False, "created": started, "agent": True,
+            "drift": drift,
+        })
+
+    threads = ThreadStore()
+    graph = (
+        build_graph(agent_brain, agent_edit, out_dir, max_steps=max(1, settings.agent_max_steps),
+                    review=settings.agent_review, checkpointer=threads.saver)
+        if agent_brain else None
+    )
+    app.state.threads = threads
+
+    def sse(event: str, data: dict) -> str:
+        return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+
+    @app.post("/api/agent")
+    async def agent_chat(
+        request: Request,
+        message: str = Form(...),
+        thread: str = Form(...),
+        image: UploadFile = File(...),
+        mask: Optional[UploadFile] = File(None),
+        model: str = Form(""),
+    ):
+        """One chat message: plan, edit round by round, check each round, reply.
+        With a mask, every step changes only the brushed area.
+        Streams Server-Sent Events: plan, attempt, check, round, done (or error)."""
+        if graph is None:
+            raise HTTPException(503, "The editing agent needs Cloudflare or a Claude API key on this server.")
+        visitor = visitor_id(request)
+        message = message.strip()
+        if not message or len(message) > 2000:
+            raise HTTPException(400, "Write a message of 1 to 2000 characters.")
+        if not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", thread):
+            raise HTTPException(400, "Invalid chat id.")
+        get_model(model or settings.default_image_model)  # 400 on an unknown model
+        refusal = limiter.check(visitor, 1)
+        if refusal:
+            raise HTTPException(429, refusal)
+        src = await read_image(image)
+        if src is None:
+            raise HTTPException(400, "Upload an image first.")
+        start_id = uuid.uuid4().hex
+        start_file = f"{start_id}-start.png"
+        await asyncio.to_thread(limit_size(src).save, out_dir / start_file)
+        mask_file = None
+        mask_img = await read_image(mask)
+        if mask_img is not None:
+            if mask_img.convert("L").point(lambda v: 255 if v > 127 else 0).getbbox() is None:
+                raise HTTPException(400, "Brush the area you want to change first.")
+            mask_file = f"{start_id}-mask.png"
+            await asyncio.to_thread(mask_img.convert("L").save, out_dir / mask_file)
+
+        thread_id = f"{owner_tag(visitor)}-{thread}"  # visitors can't reach each other's chats
+        threads.touch(thread_id)
+        config = {"configurable": {"thread_id": thread_id, "visitor": visitor, "model": model, "mask": mask_file},
+                  "recursion_limit": 60}
+
+        async def events():
+            try:
+                async for update in graph.astream(run_input(message, start_file), config, stream_mode="updates"):
+                    for node, out in update.items():
+                        out = out or {}
+                        if node == "plan":
+                            yield sse("plan", {"reply": out.get("plan_reply", ""),
+                                               "steps": [s["title"] for s in out.get("steps", [])]})
+                        elif node == "edit" and out.get("candidate"):
+                            yield sse("attempt", {"image_url": out["candidate"]["image_url"]})
+                        elif node == "check":
+                            v = out.get("verdict") or {}
+                            yield sse("check", {"ok": v.get("ok", True), "reason": v.get("reason", ""),
+                                                "retry": bool(v.get("retry"))})
+                        elif node == "accept":
+                            yield sse("round", out["rounds"][-1])
+                        elif node == "finish":
+                            yield sse("done", {"reply": out.get("reply", ""), "notes": out.get("notes", []),
+                                               "remaining_today": limiter.remaining(visitor)})
+            except Exception as e:  # report instead of cutting the stream
+                yield sse("error", {"detail": getattr(e, "message", None) or "The agent failed. Try again."})
+            maybe_cleanup()
+
+        return StreamingResponse(events(), media_type="text/event-stream",
+                                 headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+    # ---------------- camera-move video (2.5D novel view synthesis) ----------------
+    @app.post("/api/video")
+    async def video(
+        request: Request,
+        image: UploadFile = File(...),
+        motion: str = Form("push"),
+        seconds: float = Form(4.0),
+        fill: bool = Form(False),
+        model: str = Form(""),
+    ):
+        """Estimate depth, move a virtual camera through it and return an MP4.
+        Depth and rendering run on this server's CPU. With fill, the move is bigger and
+        the areas it reveals are repainted by FLUX.2 (1-2 edits from the allowance)."""
+        visitor = visitor_id(request)
+        if not 2 <= seconds <= 8:
+            raise HTTPException(400, "Length must be between 2 and 8 seconds.")
+        src = await read_image(image)
+        if src is None:
+            raise HTTPException(400, "Upload an image first.")
+        inpaint = None
+        if fill:
+            if not settings.cloudflare_ready:
+                raise HTTPException(503, "Filling revealed areas needs Cloudflare. Turn it off or add the keys to .env.")
+            image_model = get_model(model or settings.default_image_model)
+            refusal = limiter.check(visitor, keyframe_budget(motion))
+            if refusal:
+                raise HTTPException(429, refusal)
+
+            async def inpaint(view: Image.Image, hole_mask: Image.Image) -> Image.Image:
+                plan = await asyncio.to_thread(plan_local_edit, view, hole_mask)
+                result = await image_client.generate(ImageRequest(
+                    prompt=FILL_PROMPT + LOCAL_HINT, model=image_model, width=plan.gen_width,
+                    height=plan.gen_height, references=[reference_png(plan.crop)],
+                    seed=random.randint(0, 2**31 - 1),
+                ))
+                limiter.record(visitor)
+                try:
+                    patch = Image.open(io.BytesIO(result))
+                    patch.load()
+                except (UnidentifiedImageError, OSError):
+                    raise ImageAPIError("Cloudflare returned something that is not an image.", 502)
+                return await asyncio.to_thread(composite_local, plan, patch)
+
+        job_id = uuid.uuid4().hex
+        video_path, depth_path = out_dir / f"{job_id}.mp4", out_dir / f"{job_id}-depth.png"
+        started = time.time()
+        async with video_slots:
+            info = await make_video(src, depth_estimator, motion, seconds, video_path, depth_path, inpaint)
+        maybe_cleanup()
+        return {
+            "id": job_id, "motion": motion, "seconds": seconds, "frames": info["frames"],
+            "fills": info["fills"], "remaining_today": limiter.remaining(visitor),
+            "elapsed": round(time.time() - started, 1),
+            "video_url": f"/outputs/{job_id}.mp4", "depth_url": f"/outputs/{job_id}-depth.png",
+        }
 
     @app.get("/api/history")
     async def history(request: Request):

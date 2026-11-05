@@ -59,6 +59,54 @@ class LLMError(Exception):
         self.status = status
 
 
+def image_block(png: bytes, media_type: str = "image/png") -> dict:
+    return {
+        "type": "image",
+        "source": {"type": "base64", "media_type": media_type, "data": base64.standard_b64encode(png).decode("ascii")},
+    }
+
+
+async def claude_json(
+    client: anthropic.AsyncAnthropic, settings: Settings, system: str, content: list[dict], schema: dict
+) -> dict:
+    """One Claude call with structured JSON output; API failures become LLMError."""
+    try:
+        response = await client.beta.messages.create(
+            model=settings.claude_model,
+            max_tokens=16000,
+            betas=["server-side-fallback-2026-07-01"],
+            fallbacks="default",
+            system=system,
+            output_config={"effort": settings.claude_effort, "format": {"type": "json_schema", "schema": schema}},
+            messages=[{"role": "user", "content": content}],
+        )
+    except anthropic.AuthenticationError:
+        raise LLMError("The Claude API key is missing or invalid. Set ANTHROPIC_API_KEY, or write the prompt yourself.", 401)
+    except anthropic.PermissionDeniedError:
+        raise LLMError("This API key cannot use this model.", 403)
+    except anthropic.RateLimitError:
+        raise LLMError("Too many Claude API requests. Wait a minute and try again.", 429)
+    except anthropic.BadRequestError as e:
+        raise LLMError(f"Claude API rejected the request: {e.message}", 400)
+    except anthropic.APIStatusError as e:
+        raise LLMError(f"Claude API error ({e.status_code}). Try again later.", 502)
+    except anthropic.APIConnectionError:
+        raise LLMError("Could not reach the Claude API. Check your internet connection.", 502)
+
+    if response.stop_reason == "refusal":
+        raise LLMError("Claude could not do this request. Try rewording it.", 422)
+    if response.stop_reason == "max_tokens":
+        raise LLMError("Claude's reply was cut off. Try again.", 502)
+    raw = "".join(block.text for block in response.content if block.type == "text")
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        data = None
+    if not isinstance(data, dict):
+        raise LLMError("Claude returned an unexpected format. Try again.", 502)
+    return data
+
+
 class PromptWriter(Protocol):
     async def suggest(
         self, idea: str, image_png: Optional[bytes] = None, current_mode: Optional[str] = None
@@ -82,16 +130,7 @@ class ClaudePromptWriter:
     ) -> PromptSuggestion:
         content: list[dict] = []
         if image_png:
-            content.append(
-                {
-                    "type": "image",
-                    "source": {
-                        "type": "base64",
-                        "media_type": "image/png",
-                        "data": base64.standard_b64encode(image_png).decode("ascii"),
-                    },
-                }
-            )
+            content.append(image_block(image_png))
         text = f"What I want: {idea.strip()}"
         if current_mode:
             text += f"\nCurrent mode: {current_mode} (change it if another fits better)"
@@ -99,41 +138,10 @@ class ClaudePromptWriter:
             text += "\nThe attached image is my original photo."
         content.append({"type": "text", "text": text})
 
+        data = await claude_json(self.client, self.settings, SYSTEM_PROMPT, content, OUTPUT_SCHEMA)
         try:
-            response = await self.client.beta.messages.create(
-                model=self.settings.claude_model,
-                max_tokens=16000,
-                betas=["server-side-fallback-2026-07-01"],
-                fallbacks="default",
-                system=SYSTEM_PROMPT,
-                output_config={
-                    "effort": self.settings.claude_effort,
-                    "format": {"type": "json_schema", "schema": OUTPUT_SCHEMA},
-                },
-                messages=[{"role": "user", "content": content}],
-            )
-        except anthropic.AuthenticationError:
-            raise LLMError("The Claude API key is missing or invalid. Set ANTHROPIC_API_KEY, or write the prompt yourself.", 401)
-        except anthropic.PermissionDeniedError:
-            raise LLMError("This API key cannot use this model.", 403)
-        except anthropic.RateLimitError:
-            raise LLMError("Too many Claude API requests. Wait a minute and try again.", 429)
-        except anthropic.BadRequestError as e:
-            raise LLMError(f"Claude API rejected the request: {e.message}", 400)
-        except anthropic.APIStatusError as e:
-            raise LLMError(f"Claude API error ({e.status_code}). Try again later.", 502)
-        except anthropic.APIConnectionError:
-            raise LLMError("Could not reach the Claude API. Check your internet connection.", 502)
-
-        if response.stop_reason == "refusal":
-            raise LLMError("Claude could not write a prompt for this description. Try rewording it.", 422)
-        if response.stop_reason == "max_tokens":
-            raise LLMError("Claude's reply was cut off. Try again.", 502)
-
-        raw = "".join(block.text for block in response.content if block.type == "text")
-        try:
-            suggestion = PromptSuggestion.model_validate(json.loads(raw))
-        except (json.JSONDecodeError, ValidationError):
+            suggestion = PromptSuggestion.model_validate(data)
+        except ValidationError:
             raise LLMError("Claude returned an unexpected format. Try again.", 502)
         if suggestion.mode not in MODE_KEYS:
             suggestion.mode = current_mode or "edit"

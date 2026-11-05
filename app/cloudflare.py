@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import json
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -58,11 +59,70 @@ class CloudflareImageClient:
         if self._http is not None:
             await self._http.aclose()
 
-    async def generate(self, req: ImageRequest) -> bytes:
+    def _require_ready(self) -> None:
         if not self.settings.cloudflare_ready:
             raise ImageAPIError(
                 "Cloudflare is not set up. Add CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN to .env.", 503
             )
+
+    async def _run(self, model_id: str, **body) -> dict:
+        """POST to a Workers AI model (body as `files=` or `json=`) and return the JSON payload."""
+        url = f"{API_BASE}/{self.settings.cf_account_id}/ai/run/{model_id}"
+        headers = {"Authorization": f"Bearer {self.settings.cf_api_token}"}
+
+        # Retry transient failures (network errors, timeouts, 5xx) with exponential
+        # backoff. 4xx errors (bad token, quota used up, bad input) are not retried:
+        # repeating them would fail the same way.
+        attempts = self.max_retries + 1
+        for attempt in range(attempts):
+            last = attempt == attempts - 1
+            try:
+                resp = await self.http.post(url, headers=headers, **body)
+            except httpx.TimeoutException:
+                if last:
+                    raise ImageAPIError("Cloudflare timed out. Try again.", 504)
+            except httpx.HTTPError:
+                if last:
+                    raise ImageAPIError("Could not reach Cloudflare. Check your internet connection.", 502)
+            else:
+                if resp.status_code < 500 or last:
+                    break
+            await self._sleep(self.backoff_base * 2**attempt)
+
+        payload = _json(resp)
+        if resp.status_code >= 400 or payload.get("success") is False:
+            raise _api_error(resp.status_code, payload)
+        return payload
+
+    async def chat_json(self, model_id: str, messages: list[dict], schema: dict, max_tokens: int = 1200) -> dict:
+        """Run a Workers AI chat model in JSON mode and return the parsed object."""
+        self._require_ready()
+        payload = await self._run(
+            model_id,
+            json={
+                "messages": messages,
+                "response_format": {"type": "json_schema", "json_schema": schema},
+                "max_tokens": max_tokens,
+            },
+        )
+        result = payload.get("result") or {}
+        answer = result.get("response") if isinstance(result, dict) else None
+        if answer is None:  # OpenAI-style shape
+            try:
+                answer = result["choices"][0]["message"]["content"]
+            except (KeyError, IndexError, TypeError):
+                answer = None
+        if isinstance(answer, str):
+            try:
+                answer = json.loads(answer)
+            except ValueError:
+                answer = None
+        if not isinstance(answer, dict):
+            raise ImageAPIError("The Cloudflare language model returned an unexpected format. Try again.", 502)
+        return answer
+
+    async def generate(self, req: ImageRequest) -> bytes:
+        self._require_ready()
         if len(req.references) > 4:
             raise ImageAPIError("Use at most 4 reference images.", 400)
 
@@ -80,31 +140,7 @@ class CloudflareImageClient:
             (f"input_image_{i}", (f"image_{i}.png", png, "image/png")) for i, png in enumerate(req.references)
         ]
 
-        url = f"{API_BASE}/{self.settings.cf_account_id}/ai/run/{req.model.model_id}"
-        headers = {"Authorization": f"Bearer {self.settings.cf_api_token}"}
-
-        # Retry transient failures (network errors, timeouts, 5xx) with exponential
-        # backoff. 4xx errors (bad token, quota used up, bad input) are not retried:
-        # repeating them would fail the same way.
-        attempts = self.max_retries + 1
-        for attempt in range(attempts):
-            last = attempt == attempts - 1
-            try:
-                resp = await self.http.post(url, headers=headers, files=parts)
-            except httpx.TimeoutException:
-                if last:
-                    raise ImageAPIError("Cloudflare timed out. Try again.", 504)
-            except httpx.HTTPError:
-                if last:
-                    raise ImageAPIError("Could not reach Cloudflare. Check your internet connection.", 502)
-            else:
-                if resp.status_code < 500 or last:
-                    break
-            await self._sleep(self.backoff_base * 2**attempt)
-
-        payload = _json(resp)
-        if resp.status_code >= 400 or payload.get("success") is False:
-            raise _api_error(resp.status_code, payload)
+        payload = await self._run(req.model.model_id, files=parts)
 
         result = payload.get("result") or {}
         image_b64 = result.get("image") if isinstance(result, dict) else None

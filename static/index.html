@@ -3,15 +3,15 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>ArchEdit</title>
+<title>Image editing for architecture</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Source+Sans+3:wght@400;600;700&family=Source+Serif+4:opsz,wght@8..60,600;8..60,900&family=JetBrains+Mono:wght@400;600&display=swap">
-<link rel="stylesheet" href="/static/style.css?v=13">
+<link rel="stylesheet" href="/static/style.css?v=17">
 </head>
 <body>
 <div class="wrap">
   <header>
-    <div><h1>ArchEdit</h1><p class="sub">Image editing for architecture and interiors</p></div>
+    <div><h1>Image editing for architecture</h1></div>
     <div class="pills"><span class="pill" id="remaining" hidden></span><span class="pill" id="statusPill">…</span></div>
   </header>
 
@@ -111,6 +111,26 @@
         <p class="note" id="status" role="status"></p>
       </section>
 
+      <section class="panel" id="agentPanel" hidden>
+        <div class="rounds-head">
+          <h2>Chat editing agent</h2>
+          <div class="btns"><span class="pill" id="agentBrain"></span><button class="btn ghost" id="newChat" type="button">New chat</button></div>
+        </div>
+        <div class="chat" id="chatLog" aria-live="polite">
+          <p class="note">Describe several changes in one message, in any language. The agent plans the steps, edits the latest image round by round, checks each result and retries a missed edit once. Follow-up messages keep editing from the latest round.</p>
+        </div>
+        <div class="seg2" role="group" aria-label="Agent edits">
+          <button type="button" id="agentWhole" aria-pressed="true">Whole image</button>
+          <button type="button" id="agentArea" aria-pressed="false">Brushed area</button>
+        </div>
+        <form class="chat-form" id="agentForm">
+          <label for="agentMsg" class="sr">Message</label>
+          <textarea id="agentMsg" rows="2" placeholder="e.g. 把床後面的牆改成紅磚，再換成藍調時刻，最後整理桌面"></textarea>
+          <button class="btn primary" id="agentSend" type="submit">Send</button>
+        </form>
+        <p class="note" id="agentHint">Each step uses one edit from the daily allowance (two if it is retried).</p>
+      </section>
+
       <section class="panel" id="comparePanel" hidden>
         <div class="rounds-head">
           <h2>Before / after</h2>
@@ -125,6 +145,31 @@
           <span class="tag l" id="cmpBeforeTag">Original</span><span class="tag r" id="cmpAfterTag">After</span>
           <div class="handle" id="handle"></div>
         </div>
+      </section>
+
+      <section class="panel" id="videoPanel" hidden>
+        <div class="rounds-head">
+          <h2>Camera-move video</h2>
+          <span class="note" id="videoFrom"></span>
+        </div>
+        <div class="video-controls">
+          <div class="seg3" id="motions" role="group" aria-label="Camera move"></div>
+          <label class="inline" for="videoLen">Length
+            <select id="videoLen"><option value="3">3 s</option><option value="4" selected>4 s</option><option value="6">6 s</option></select>
+          </label>
+          <label class="check" id="fillBox" title="Doubles the camera move; the areas it reveals behind objects are repainted by FLUX.2"><input type="checkbox" id="videoFill"> Bigger move, fill revealed areas with FLUX (1–2 edits)</label>
+          <button class="btn primary" id="makeVideo" type="button">Make video</button>
+        </div>
+        <p class="note" id="motionHint"></p>
+        <div class="video-out" id="videoOut" hidden>
+          <video id="videoPlayer" controls loop muted playsinline></video>
+          <figure>
+            <figcaption><span>Depth</span><span>bright = near</span></figcaption>
+            <img id="depthImg" alt="Estimated depth map">
+            <a class="btn ghost" id="videoDownload" download="camera-move.mp4" href="#">Download MP4</a>
+          </figure>
+        </div>
+        <p class="note">2.5D: the depth of one image gives near objects more motion than far ones, and a z-buffer keeps them in front. Depth and rendering run on this server for free. Without fill, nothing hidden behind objects is invented, so moves stay small; with fill, FLUX.2 repaints what the bigger move reveals at one or two keyframes, and every frame reuses it.</p>
       </section>
 
       <section class="panel" id="variantsPanel" hidden>
@@ -151,6 +196,6 @@
     </div>
   </div>
 </div>
-<script src="/static/app.js?v=13"></script>
+<script src="/static/app.js?v=17"></script>
 </body>
 </html>

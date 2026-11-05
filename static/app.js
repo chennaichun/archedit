@@ -30,6 +30,11 @@ async function boot() {
     pill.className = "pill " + (st.cloudflare_ready ? "ok" : "bad");
     showRemaining(st.remaining_today);
     if (!st.claude_ready) $("askClaude").hidden = true;
+    if (!st.cloudflare_ready) $("fillBox").hidden = true;
+    if (st.agent_brain) {
+      $("agentPanel").hidden = false;
+      $("agentBrain").textContent = st.agent_brain === "claude" ? "Claude" : st.agent_brain === "cloudflare" ? "Free Cloudflare model" : st.agent_brain;
+    }
     for (const s of cat.sizes) $("size").add(new Option(s === "auto" ? "Match input" : s.replace("x", " × "), s));
     for (const m of cat.models) {
       state.models[m.key] = m;
@@ -38,6 +43,7 @@ async function boot() {
       $("model").add(o);
     }
     if (state.models[st.default_model]) $("model").value = st.default_model;
+    initMotions(cat.motions || []);
     for (const t of cat.tools) {
       state.tools[t.key] = t;
       const b = document.createElement("button");
@@ -108,6 +114,7 @@ $("prompt").addEventListener("input", () => { state.preset = null; [...$("preset
 
 function selectMode(key) {
   state.mode = key;
+  syncAgentScope();
   $("cannyBox").hidden = key !== "edges";
   $("brushBox").hidden = key !== "local";
   showSourceView();
@@ -188,12 +195,21 @@ function setSource(file, isExample = false, keepRounds = false) {
     state.rounds = [{ file, url, label: "Original", prompt: "" }];
     state.round = 0;
     renderRounds();
+    newChat();
   }
   show("srcImg", "srcEmpty", url);
   $("srcInfo").textContent = file.name || "";
+  $("videoPanel").hidden = false;
+  $("videoFrom").textContent = state.round > 0 ? `From round ${state.round}` : "From the original";
   const img = new Image();
   img.onload = () => {
+    const old = state.keepMask && !state.maskEmpty ? state.mask : null;
+    state.keepMask = false;
     state.img = img; resetMask();
+    if (old) {  // the agent edits the same brushed area again in the next round
+      state.mask.getContext("2d").drawImage(old, 0, 0, state.mask.width, state.mask.height);
+      state.maskEmpty = false;
+    }
     if (state.mode === "text") selectMode("edit");
     else if (state.mode === "local") selectMode("local");
     else schedulePreview(0);
@@ -316,7 +332,7 @@ $("generate").onclick = async () => {
     const r = await (await api("/api/generate", { method: "POST", body: fd })).json();
     show("outImg", "outEmpty", r.image_url);
     $("openOut").href = r.image_url; $("openOut").hidden = false;
-    $("outInfo").textContent = `seed ${r.seed} · ${r.cached ? "cached" : r.elapsed + "s"}`;
+    $("outInfo").textContent = `seed ${r.seed} · ${r.cached ? "cached" : r.elapsed + "s"}` + driftNote(r.drift);
     await addRound(r, fd.get("prompt"));
     showVariants(r.variants || [], r.failed || 0);
     showRemaining(r.remaining_today);
@@ -458,6 +474,211 @@ $("cmpPrev").onclick = () => { state.cmpPrev = true; renderCompare(); };
 $("undoRound").onclick = () => goToRound(state.round - 1);
 $("redoRound").onclick = () => goToRound(state.round + 1);
 $("resetRounds").onclick = () => goToRound(0);
+
+/* ---------- chat editing agent ---------- */
+// Each message runs the LangGraph agent on the server: plan -> edit -> check
+// (retry once) -> next step. Accepted steps become rounds; the chat thread
+// remembers the conversation, and every message starts from the current round.
+const newThreadId = () => (crypto.randomUUID ? crypto.randomUUID() : String(Math.random()).slice(2)).replace(/[^A-Za-z0-9_-]/g, "");
+state.thread = newThreadId();
+function newChat() {
+  state.thread = newThreadId();
+  const log = $("chatLog");
+  [...log.children].slice(1).forEach(el => el.remove());  // keep the intro note
+}
+$("newChat").onclick = () => { if (!state.busy) newChat(); };
+function chatAdd(cls, text) {
+  const el = document.createElement("div");
+  el.className = cls; el.textContent = text;
+  $("chatLog").appendChild(el);
+  el.scrollIntoView({ block: "nearest" });
+  return el;
+}
+function stepLine(text) {
+  const el = document.createElement("div"); el.className = "step";
+  const img = document.createElement("img"); img.alt = ""; img.hidden = true;
+  const t = document.createElement("span");
+  el.append(img, t);
+  $("chatLog").appendChild(el);
+  el.scrollIntoView({ block: "nearest" });
+  const set = (html) => { t.innerHTML = html; el.scrollIntoView({ block: "nearest" }); };
+  set(text);
+  return { el, img, set };
+}
+const esc = s => s.replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+
+async function* readSSE(res) {
+  const reader = res.body.getReader(), dec = new TextDecoder();
+  let buf = "";
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buf += dec.decode(value, { stream: true });
+    let i;
+    while ((i = buf.indexOf("\n\n")) >= 0) {
+      const block = buf.slice(0, i); buf = buf.slice(i + 2);
+      let event = "message", data = "";
+      for (const line of block.split("\n")) {
+        if (line.startsWith("event: ")) event = line.slice(7);
+        else if (line.startsWith("data: ")) data += line.slice(6);
+      }
+      if (data) yield { event, data: JSON.parse(data) };
+    }
+  }
+}
+
+async function addAgentRound(r) {
+  const blob = await (await api(r.image_url)).blob();
+  const n = state.round + 1;
+  const file = new File([blob], `round-${n}.png`, { type: "image/png" });
+  state.rounds = state.rounds.slice(0, state.round + 1);
+  state.rounds.push({ file, url: r.image_url, label: "Agent · " + r.title, prompt: r.prompt });
+  state.round = n;
+  state.keepMask = state.mode === "local";
+  setSource(file, false, true);
+  if (state.tool.key === "sketch") selectTool("edit");
+  show("outImg", "outEmpty", r.image_url);
+  $("openOut").href = r.image_url; $("openOut").hidden = false;
+  $("outInfo").textContent = `round ${n} · seed ${r.seed}`;
+  if (r.guide_url) { show("mapImg", "mapEmpty", r.guide_url); $("mapInfo").textContent = "Crop sent"; }
+  renderRounds();
+}
+
+// The chat follows the same "Apply to" choice as the tools: in Brushed area mode
+// the input turns into the brush canvas and every step changes only that area.
+function syncAgentScope() {
+  const area = state.mode === "local";
+  $("agentWhole").setAttribute("aria-pressed", !area);
+  $("agentArea").setAttribute("aria-pressed", area);
+  $("agentHint").textContent = area
+    ? "Brush the area on the input image. Every step changes only that area; the rest stays pixel-identical. The area is kept for follow-up messages. Lighting and style need Whole image."
+    : "Each step edits the whole image. Switch to Brushed area to change only a part you paint. Each step uses one edit from the daily allowance (two if it is retried).";
+}
+function setAgentScope(area) {
+  if (state.busy || area === (state.mode === "local")) return;
+  if (state.tool.brushable) setScope(area);
+  else if (area && state.tool.mode === "local") selectMode("local");
+  else { selectTool("edit"); if (area) setScope(true); }
+}
+$("agentWhole").onclick = () => setAgentScope(false);
+$("agentArea").onclick = () => setAgentScope(true);
+
+$("agentMsg").addEventListener("keydown", e => {
+  if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); $("agentForm").requestSubmit(); }
+});
+$("agentForm").onsubmit = async e => {
+  e.preventDefault();
+  const message = $("agentMsg").value.trim();
+  if (!message || state.busy) return;
+  if (!state.source) { setStatus("Upload an image first", true); return; }
+  const area = state.mode === "local";
+  if (area && state.maskEmpty) { setStatus("Brush the area you want to change on the input image first", true); return; }
+  state.busy = true; $("agentSend").disabled = true; $("generate").disabled = true;
+  $("variantsPanel").hidden = true;
+  chatAdd("msg user", message);
+  $("agentMsg").value = "";
+  const fd = new FormData();
+  fd.append("message", message);
+  fd.append("thread", state.thread);
+  fd.append("model", $("model").value);
+  fd.append("image", state.source);
+  if (area) fd.append("mask", await maskBlob(), "mask.png");
+  let steps = [], idx = 0, line = stepLine('<span class="spin"></span>Planning…');
+  const editing = () => `<span class="spin"></span>Step ${idx + 1}/${steps.length} · <b>${esc(steps[idx] || "")}</b> — editing…`;
+  try {
+    const res = await api("/api/agent", { method: "POST", body: fd });
+    for await (const { event, data } of readSSE(res)) {
+      if (event === "plan") {
+        line.el.remove(); line = null;
+        steps = data.steps;
+        if (steps.length) {
+          const m = chatAdd("msg agent", data.reply || "Plan:");
+          const ol = document.createElement("ol");
+          steps.forEach(t => { const li = document.createElement("li"); li.textContent = t; ol.appendChild(li); });
+          m.appendChild(ol);
+          line = stepLine(editing());
+        }
+      } else if (event === "attempt") {
+        line.img.src = data.image_url; line.img.hidden = false;
+        line.set(`<span class="spin"></span>Step ${idx + 1}/${steps.length} · <b>${esc(steps[idx])}</b> — checking…`);
+      } else if (event === "check") {
+        if (data.retry) line.set(`<span class="spin"></span>Step ${idx + 1}/${steps.length} · <b>${esc(steps[idx])}</b> — <span class="bad">${esc(data.reason || "missed")}</span>, retrying…`);
+      } else if (event === "round") {
+        const mark = data.ok ? `<span class="ok">✓</span>` : `<span class="bad">⚠</span>`;
+        line.img.src = data.image_url; line.img.hidden = false;
+        line.set(`${mark} Step ${idx + 1}/${steps.length} · <b>${esc(data.title)}</b>${data.check ? " — " + esc(data.check) : ""}${data.attempts > 1 ? " (2nd try)" : ""}${esc(driftNote(data.drift))}`);
+        await addAgentRound(data);
+        idx += 1;
+        line = idx < steps.length ? stepLine(editing()) : null;
+      } else if (event === "done") {
+        if (line) { line.el.remove(); line = null; }
+        // With a plan, its reply is already shown: add only warnings and stop reasons.
+        const text = steps.length ? data.notes.join("\n") : data.reply;
+        if (text) chatAdd("msg agent" + (steps.length ? " err" : ""), text);
+        showRemaining(data.remaining_today);
+      } else if (event === "error") {
+        if (line) { line.el.remove(); line = null; }
+        chatAdd("msg agent err", data.detail);
+      }
+    }
+  } catch (err) {
+    if (line) line.el.remove();
+    chatAdd("msg agent err", err.message);
+  } finally {
+    state.busy = false; $("agentSend").disabled = false; $("generate").disabled = false;
+    loadHistory();
+  }
+};
+
+// Drift guard: whole-image rounds are registered back onto their input on the server.
+function driftNote(d) {
+  if (!d || !d.fixed) return "";
+  const pct = Math.abs(d.scale - 1) * 100;
+  return ` · drift fixed ${Math.round(d.max_offset)}px` + (pct >= 0.5 ? ` (${pct.toFixed(1)}% zoom)` : "");
+}
+
+/* ---------- camera-move video ---------- */
+// Depth from the current round, then a small virtual camera move rendered on the server.
+function initMotions(motions) {
+  const box = $("motions"); box.replaceChildren();
+  motions.forEach((m, i) => {
+    const b = document.createElement("button");
+    b.type = "button"; b.textContent = m.label; b.title = m.description; b.dataset.k = m.key;
+    b.onclick = () => pickMotion(m);
+    box.appendChild(b);
+    if (i === 0) pickMotion(m);
+  });
+}
+function pickMotion(m) {
+  state.motion = m.key;
+  [...$("motions").children].forEach(b => b.setAttribute("aria-pressed", b.dataset.k === m.key));
+  $("motionHint").textContent = m.description;
+}
+$("makeVideo").onclick = async () => {
+  if (!state.source || state.videoBusy) return;
+  state.videoBusy = true;
+  const btn = $("makeVideo"); btn.disabled = true; btn.textContent = "Rendering…";
+  const fd = new FormData();
+  fd.append("image", state.source);
+  fd.append("motion", state.motion || "push");
+  fd.append("seconds", $("videoLen").value);
+  const fill = $("videoFill").checked;
+  if (fill) { fd.append("fill", "true"); fd.append("model", $("model").value); btn.textContent = "Rendering + filling…"; }
+  try {
+    const r = await (await api("/api/video", { method: "POST", body: fd })).json();
+    $("videoOut").hidden = false;
+    const v = $("videoPlayer");
+    v.src = r.video_url; v.play().catch(() => {});
+    $("depthImg").src = r.depth_url;
+    $("videoDownload").href = r.video_url;
+    setStatus(`Video ready: ${r.frames} frames in ${r.elapsed}s` + (fill ? ` · ${r.fills} area${r.fills === 1 ? "" : "s"} filled by FLUX` : ""));
+    if (fill) showRemaining(r.remaining_today);
+  } catch (e) {
+    setStatus(e.message, true);
+  } finally {
+    state.videoBusy = false; btn.disabled = false; btn.textContent = "Make video";
+  }
+};
 
 /* ---------- history ---------- */
 async function loadHistory() {

@@ -29,6 +29,7 @@ from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
 ROOT = Path(__file__).resolve().parents[2]
 OUT = Path(__file__).resolve().parent / "archedit-tutorial.mp4"
+PREVIEW = OUT.with_suffix(".gif")  # silent, auto-playing copy for the README
 VIEW_W, VIEW_H = 1440, 900  # browser viewport
 OUT_W, OUT_H = 1280, 800  # video size
 FPS = 30
@@ -364,17 +365,52 @@ def build(scenes: list[Scene], work: Path, out: Path) -> None:
     print(f"wrote {out} ({sum(plan) / FPS:.0f} s, {out.stat().st_size / 1e6:.1f} MB)")
 
 
+def make_preview(video: Path, out: Path, width: int = 640, sample_fps: int = 4, min_change: float = 10.0) -> None:
+    """Silent animated GIF of the tutorial for the README, where GIFs play on their own and
+    videos don't. Frames that barely change are merged into one longer frame, so the long
+    still scenes cost almost nothing and the file stays small."""
+    gen = imageio_ffmpeg.read_frames(str(video))
+    meta = next(gen)
+    w, h = meta["size"]
+    step = round(FPS / sample_fps)
+    height = round(h * width / w)
+    frames: list[Image.Image] = []
+    durations: list[int] = []
+    last: Optional[np.ndarray] = None
+    for i, raw in enumerate(gen):
+        if i % step:
+            continue
+        img = Image.frombytes("RGB", (w, h), raw).resize((width, height), Image.LANCZOS)
+        arr = np.asarray(img, dtype=np.int16)
+        small = img.quantize(colors=160, method=Image.Quantize.MEDIANCUT, dither=Image.Dither.NONE)
+        if last is not None and np.abs(arr - last).mean() < min_change:
+            # Same scene: keep showing it longer, and keep its latest look (spotlight fully on).
+            durations[-1] += round(1000 / sample_fps)
+            frames[-1] = small
+        else:
+            frames.append(small)
+            durations.append(round(1000 / sample_fps))
+        last = arr
+    frames[0].save(out, save_all=True, append_images=frames[1:], duration=durations, loop=0, optimize=True)
+    print(f"wrote {out} ({len(frames)} frames, {out.stat().st_size / 1e6:.1f} MB)")
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--url", default="http://localhost:8765")
     ap.add_argument("--out", type=Path, default=OUT)
     ap.add_argument("--keep", type=Path, help="keep the screenshots and voice files in this folder")
+    ap.add_argument("--preview-only", action="store_true", help="only rebuild the README GIF from the MP4")
     args = ap.parse_args()
+    if args.preview_only:
+        make_preview(args.out, args.out.with_suffix(".gif"))
+        return
     with tempfile.TemporaryDirectory() as tmp:
         work = args.keep or Path(tmp)
         work.mkdir(parents=True, exist_ok=True)
         scenes = record(args.url, work)
         build(scenes, work, args.out)
+    make_preview(args.out, args.out.with_suffix(".gif"))
 
 
 if __name__ == "__main__":
